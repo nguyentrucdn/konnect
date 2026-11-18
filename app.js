@@ -31,6 +31,9 @@ let incomingFiles = new Map();
 let activeScanStream;
 let scanFrameId;
 let toastTimeout;
+let lastScanTime = 0;
+const scanCanvas = document.createElement("canvas");
+const scanContext = scanCanvas.getContext("2d", { willReadFrequently: true });
 
 function showSetupError(message) {
   setupError.textContent = message;
@@ -86,25 +89,28 @@ function decodeDescription(code) {
 }
 
 function drawQr(canvas, value) {
-  const qr = qrcode(0, "M");
+  const qr = qrcode(0, "L");
   qr.addData(value);
   qr.make();
   const context = canvas.getContext("2d");
-  const size = canvas.width;
   const margin = 4;
   const moduleCount = qr.getModuleCount();
-  const scale = size / (moduleCount + margin * 2);
+  const moduleSize = 4;
+  const size = (moduleCount + margin * 2) * moduleSize;
+  canvas.width = size;
+  canvas.height = size;
   context.fillStyle = "#ffffff";
   context.fillRect(0, 0, size, size);
   context.fillStyle = "#17231e";
   for (let row = 0; row < moduleCount; row += 1) {
     for (let column = 0; column < moduleCount; column += 1) {
       if (qr.isDark(row, column)) {
-        const x = Math.floor((column + margin) * scale);
-        const y = Math.floor((row + margin) * scale);
-        const nextX = Math.ceil((column + margin + 1) * scale);
-        const nextY = Math.ceil((row + margin + 1) * scale);
-        context.fillRect(x, y, nextX - x, nextY - y);
+        context.fillRect(
+          (column + margin) * moduleSize,
+          (row + margin) * moduleSize,
+          moduleSize,
+          moduleSize,
+        );
       }
     }
   }
@@ -438,6 +444,7 @@ async function copyCode(textarea) {
 function stopScanner() {
   if (scanFrameId) cancelAnimationFrame(scanFrameId);
   scanFrameId = undefined;
+  lastScanTime = 0;
   if (activeScanStream) {
     activeScanStream.getTracks().forEach((track) => track.stop());
     activeScanStream = undefined;
@@ -446,8 +453,8 @@ function stopScanner() {
 }
 
 async function startScanner(target) {
-  if (!("BarcodeDetector" in window)) {
-    showToast("QR scanning isn’t supported by this browser. Paste the code into the text box instead.");
+  if (typeof jsQR !== "function") {
+    showToast("The QR scanner couldn’t load. Paste the connection code into the text box instead.");
     return;
   }
   if (!navigator.mediaDevices?.getUserMedia) {
@@ -457,17 +464,27 @@ async function startScanner(target) {
   scannerStatus.textContent = "Starting camera…";
   scannerDialog.showModal();
   try {
-    const detector = new BarcodeDetector({ formats: ["qr_code"] });
     activeScanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
     scannerVideo.srcObject = activeScanStream;
     await scannerVideo.play();
     scannerStatus.textContent = "Point the camera at the other person’s QR code.";
     const scan = async () => {
       if (!scannerDialog.open || !activeScanStream) return;
-      try {
-        const codes = await detector.detect(scannerVideo);
-        if (codes.length && codes[0].rawValue) {
-          target.value = codes[0].rawValue;
+      const now = performance.now();
+      if (now - lastScanTime >= 200 && scannerVideo.videoWidth) {
+        lastScanTime = now;
+        const scale = Math.min(1, 1280 / scannerVideo.videoWidth);
+        const width = Math.round(scannerVideo.videoWidth * scale);
+        const height = Math.round(scannerVideo.videoHeight * scale);
+        if (scanCanvas.width !== width || scanCanvas.height !== height) {
+          scanCanvas.width = width;
+          scanCanvas.height = height;
+        }
+        scanContext.drawImage(scannerVideo, 0, 0, width, height);
+        const image = scanContext.getImageData(0, 0, width, height);
+        const result = jsQR(image.data, width, height, { inversionAttempts: "dontInvert" });
+        if (result?.data) {
+          target.value = result.data;
           stopScanner();
           scannerDialog.close();
           target.dispatchEvent(new Event("input", { bubbles: true }));
@@ -476,8 +493,6 @@ async function startScanner(target) {
           else await completeConnection(target.value);
           return;
         }
-      } catch {
-        scannerStatus.textContent = "Couldn’t read this QR code. Hold it steady and try again.";
       }
       scanFrameId = requestAnimationFrame(scan);
     };

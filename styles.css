@@ -329,8 +329,8 @@ textarea[readonly] {
 
 .qr-wrap canvas {
   display: block;
-  width: 216px;
-  height: 216px;
+  width: min(300px, 72vw);
+  height: auto;
   image-rendering: pixelated;
 }
 
