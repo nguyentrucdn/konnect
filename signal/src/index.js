@@ -63,7 +63,7 @@ export default {
         return jsonResponse({ error: "Signaling room is not connected" }, 403, origin);
       }
 
-      if (!env.TURN_KEY_ID || !env.TURN_API_TOKEN) {
+      if (!env.TURN_KEY_ID || !env.TURN_KEY_SECRET) {
         return jsonResponse({ iceServers: STUN_SERVERS, relayAvailable: false }, 200, origin);
       }
 
@@ -83,7 +83,7 @@ export default {
           {
             method: "POST",
             headers: {
-              authorization: `Bearer ${env.TURN_API_TOKEN}`,
+              authorization: `Bearer ${env.TURN_KEY_SECRET}`,
               "content-type": "application/json",
             },
             body: JSON.stringify({ ttl: TURN_CREDENTIAL_TTL_SECONDS }),

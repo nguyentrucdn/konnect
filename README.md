@@ -20,12 +20,12 @@ The Cloudflare Worker exchanges WebRTC offer/answer descriptions and brokers sho
 
 The Worker uses a SQLite-backed Durable Object. Cloudflare's Free plan currently supports SQLite-backed Durable Objects; see [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/). TURN credentials last ten minutes, are requested only by active room participants, and are rate-limited per client IP. If TURN credentials are not configured, Konnect keeps its STUN-only behavior and warns that some networks may not connect.
 
-To enable TURN, create a Cloudflare Realtime TURN key and a separate scoped API token allowed to generate TURN credentials. Add these GitHub Actions repository secrets:
+To enable TURN, create a Cloudflare Realtime TURN key from **Cloudflare Dashboard → Realtime → TURN**. The key has a `uid` and a `secret` (Bearer token). Add these GitHub Actions repository secrets:
 
-- `CLOUDFLARE_TURN_KEY_ID`
-- `CLOUDFLARE_TURN_API_TOKEN`
+- `CLOUDFLARE_TURN_KEY_ID` — the TURN key's `uid`
+- `CLOUDFLARE_TURN_KEY_SECRET` — the TURN key's `secret`
 
-Push to `main` or run the Pages workflow after adding the secrets. The workflow stores them as Worker secrets; the API token is never included in the static site. Cloudflare currently charges `$0.05` per real-time GB outbound for TURN used without its Realtime SFU. See [Cloudflare TURN documentation](https://developers.cloudflare.com/realtime/turn/) for service details. TURN relays ciphertext and connection metadata; WebRTC DTLS still encrypts the data channel, but a relay means data no longer travels only peer-to-peer.
+Do not use the existing `CLOUDFLARE_API_TOKEN` deployment token here. Push to `main` or run the Pages workflow after adding the secrets. The workflow stores the TURN key secret as a Worker secret; it is never included in the static site. Cloudflare currently charges `$0.05` per real-time GB outbound for TURN used without its Realtime SFU. See [Cloudflare TURN documentation](https://developers.cloudflare.com/realtime/turn/) and [credential setup](https://developers.cloudflare.com/realtime/turn/generate-credentials/) for details. TURN relays ciphertext and connection metadata; WebRTC DTLS still encrypts the data channel, but a relay means data no longer travels only peer-to-peer.
 
 ## Connect
 

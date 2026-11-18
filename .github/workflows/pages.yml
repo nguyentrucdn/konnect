@@ -36,9 +36,9 @@ jobs:
         id: turn
         env:
           CLOUDFLARE_TURN_KEY_ID: ${{ secrets.CLOUDFLARE_TURN_KEY_ID }}
-          CLOUDFLARE_TURN_API_TOKEN: ${{ secrets.CLOUDFLARE_TURN_API_TOKEN }}
+          CLOUDFLARE_TURN_KEY_SECRET: ${{ secrets.CLOUDFLARE_TURN_KEY_SECRET }}
         run: |
-          if [ -n "$CLOUDFLARE_TURN_KEY_ID" ] && [ -n "$CLOUDFLARE_TURN_API_TOKEN" ]; then
+          if [ -n "$CLOUDFLARE_TURN_KEY_ID" ] && [ -n "$CLOUDFLARE_TURN_KEY_SECRET" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
           else
             echo "configured=false" >> "$GITHUB_OUTPUT"
@@ -49,10 +49,10 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_TURN_KEY_ID: ${{ secrets.CLOUDFLARE_TURN_KEY_ID }}
-          CLOUDFLARE_TURN_API_TOKEN: ${{ secrets.CLOUDFLARE_TURN_API_TOKEN }}
+          CLOUDFLARE_TURN_KEY_SECRET: ${{ secrets.CLOUDFLARE_TURN_KEY_SECRET }}
         run: |
           printf '%s' "$CLOUDFLARE_TURN_KEY_ID" | npx wrangler@4 secret put TURN_KEY_ID --config signal/wrangler.jsonc
-          printf '%s' "$CLOUDFLARE_TURN_API_TOKEN" | npx wrangler@4 secret put TURN_API_TOKEN --config signal/wrangler.jsonc
+          printf '%s' "$CLOUDFLARE_TURN_KEY_SECRET" | npx wrangler@4 secret put TURN_KEY_SECRET --config signal/wrangler.jsonc
       - name: Configure signaling endpoint
         env:
           SIGNAL_SERVER_URL: ${{ steps.signal.outputs.deployment-url }}
