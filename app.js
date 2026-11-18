@@ -188,6 +188,48 @@ function getSignalUrl(roomId, role) {
   return url.toString();
 }
 
+async function getIceServers(roomId, role) {
+  const configuredUrl = window.KONNECT_SIGNAL_URL;
+  if (!configuredUrl) {
+    throw new Error("The signaling service isn’t configured yet. Please try again later.");
+  }
+  const url = new URL(configuredUrl);
+  if (url.protocol !== "https:") {
+    throw new Error("The signaling service must use HTTPS.");
+  }
+  url.pathname = "/ice-servers";
+  url.search = "";
+  url.hash = "";
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ roomId, role }),
+      cache: "no-store",
+    });
+  } catch {
+    throw new Error("Could not reach the relay configuration service. Check your connection and try again.");
+  }
+  let config;
+  try {
+    config = await response.json();
+  } catch {
+    throw new Error("The signaling service returned an invalid relay configuration.");
+  }
+  if (!response.ok) {
+    throw new Error(config.error || "Could not obtain relay credentials. Please try again.");
+  }
+  if (!Array.isArray(config.iceServers) || typeof config.relayAvailable !== "boolean") {
+    throw new Error("The signaling service returned an invalid relay configuration.");
+  }
+  if (!config.relayAvailable) {
+    showToast("TURN relay is not configured; some networks may not connect.");
+  }
+  return config;
+}
+
 function connectSignaling(roomId, role) {
   return new Promise((resolve, reject) => {
     let url;
@@ -315,14 +357,18 @@ function configureDataChannel(channel) {
   channel.addEventListener("error", () => showToast("A data channel error occurred. Try reconnecting."));
 }
 
-function createPeerConnection() {
+function createPeerConnection(iceServers = STUN_SERVERS, relayAvailable = false) {
   if (!("RTCPeerConnection" in window)) {
     throw new Error("This browser does not support WebRTC. Try a recent version of Chrome, Firefox, or Safari.");
   }
-  peerConnection = new RTCPeerConnection({ iceServers: STUN_SERVERS });
+  peerConnection = new RTCPeerConnection({ iceServers });
   peerConnection.addEventListener("connectionstatechange", () => {
     if (peerConnection.connectionState === "failed") {
-      showToast("A direct connection could not be made. This network may require a relay, which Konnect does not use.");
+      showToast(
+        relayAvailable
+          ? "Could not establish a connection, even with the relay. Try switching one device to another network."
+          : "Could not establish a direct connection. A TURN relay is not configured for this site yet.",
+      );
     }
     if (peerConnection.connectionState === "disconnected") {
       showToast("The connection was interrupted. It may reconnect automatically.");
@@ -346,7 +392,8 @@ async function createRoom() {
   try {
     const roomId = newRoomId();
     const signaling = await connectSignaling(roomId, "offerer");
-    const connection = createPeerConnection();
+    const iceConfig = await getIceServers(roomId, "offerer");
+    const connection = createPeerConnection(iceConfig.iceServers, iceConfig.relayAvailable);
     configureDataChannel(connection.createDataChannel("konnect", { ordered: true }));
     const offer = await connection.createOffer();
     await connection.setLocalDescription(offer);
@@ -418,12 +465,13 @@ async function joinRoom(code) {
 async function joinSignalingRoom(roomId) {
   setJoinStatus("Connecting to the signaling service…");
   const signaling = await connectSignaling(roomId, "answerer");
+  const iceConfig = await getIceServers(roomId, "answerer");
   setJoinStatus("Waiting for the room offer…");
   const offer = await waitForSignal(signaling, "offer");
   if (typeof offer.sdp !== "string" || !offer.sdp.startsWith("v=0")) {
     throw new Error("The room sent an invalid connection offer.");
   }
-  const connection = createPeerConnection();
+  const connection = createPeerConnection(iceConfig.iceServers, iceConfig.relayAvailable);
   connection.addEventListener("datachannel", (event) => configureDataChannel(event.channel));
   await connection.setRemoteDescription({ type: "offer", sdp: offer.sdp });
   const answer = await connection.createAnswer();

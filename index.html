@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#f6f7f4">
-    <meta name="description" content="Share files and chat directly with another browser. No account or file storage required.">
+    <meta name="description" content="Share files and chat between browsers, with an encrypted relay fallback when needed. No account or file storage required.">
     <title>Konnect — private peer-to-peer sharing</title>
     <link rel="stylesheet" href="styles.css">
     <script defer src="vendor/qrcode-generator.js"></script>
@@ -26,7 +26,7 @@
       <section class="intro">
         <p class="eyebrow">A direct connection between browsers</p>
         <h1>Share things.<br><span>Not your data.</span></h1>
-        <p class="intro-copy">Send files and messages directly to someone else. Connect by scanning a QR code or sharing a short code — no sign-up, file relay, or file storage.</p>
+        <p class="intro-copy">Send files and messages directly when possible, with an encrypted relay fallback for restrictive networks. Connect by scanning a QR code or sharing a short code — no sign-up or file storage.</p>
       </section>
 
       <section id="setup-view" class="view">
@@ -85,16 +85,16 @@
         </div>
         <div class="rule"></div>
         <p class="eyebrow">Waiting for the other person</p>
-        <p>The signaling service exchanges connection details only. Files and chat stay direct between browsers.</p>
+        <p>The signaling service exchanges connection details only. Files and chat use a direct route when possible; a TURN relay may carry encrypted data if needed.</p>
         <p id="connection-status" class="hint" role="status">Preparing a direct connection…</p>
       </section>
 
       <section id="connected-view" class="view" hidden>
         <div class="connected-heading">
           <div>
-            <p class="eyebrow">Encrypted peer-to-peer connection</p>
+            <p class="eyebrow">Encrypted connection</p>
             <h2>Connected securely <span class="connected-indicator" aria-hidden="true"></span></h2>
-            <p>WebRTC DTLS encrypts messages and files in transit directly between these browsers.</p>
+            <p>WebRTC DTLS encrypts messages and files in transit, whether they travel directly or through a relay.</p>
           </div>
           <button id="disconnect-button" class="button button-secondary" type="button">Disconnect</button>
         </div>
@@ -154,7 +154,7 @@
 
     <footer class="footer">
       <span>Made for sharing, not storing.</span>
-      <span>WebRTC DTLS encryption · No file relay or storage</span>
+      <span>WebRTC DTLS encryption · No file storage</span>
     </footer>
   </body>
 </html>

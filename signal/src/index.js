@@ -2,6 +2,24 @@ import { DurableObject } from "cloudflare:workers";
 
 const ROOM_LIFETIME_MS = 5 * 60 * 1000;
 const MAX_SIGNAL_BYTES = 32 * 1024;
+const TURN_CREDENTIAL_TTL_SECONDS = 600;
+const TURN_REQUEST_LIMIT = 20;
+const TURN_RATE_WINDOW_MS = 60 * 1000;
+const STUN_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+
+function jsonResponse(body, status, origin) {
+  return new Response(status === 204 ? null : JSON.stringify(body), {
+    status,
+    headers: {
+      "access-control-allow-headers": "content-type",
+      "access-control-allow-methods": "POST, OPTIONS",
+      "access-control-allow-origin": origin,
+      "cache-control": "no-store",
+      "content-type": "application/json",
+      "vary": "Origin",
+    },
+  });
+}
 
 export default {
   async fetch(request, env) {
@@ -10,16 +28,95 @@ export default {
       return new Response("ok", { headers: { "cache-control": "no-store" } });
     }
 
-    const match = url.pathname.match(/^\/room\/([a-f0-9]{48})$/);
-    const role = url.searchParams.get("role");
     const origin = request.headers.get("Origin");
     const allowedOrigins = env.ALLOWED_ORIGINS.split(",").map((value) => value.trim());
-
-    if (!match || !["offerer", "answerer"].includes(role)) {
-      return new Response("Not found", { status: 404 });
-    }
     if (!origin || !allowedOrigins.includes(origin)) {
       return new Response("Origin not allowed", { status: 403 });
+    }
+
+    if (url.pathname === "/ice-servers") {
+      if (request.method === "OPTIONS") {
+        return jsonResponse({}, 204, origin);
+      }
+      if (request.method !== "POST") {
+        return jsonResponse({ error: "Method not allowed" }, 405, origin);
+      }
+
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return jsonResponse({ error: "Invalid request" }, 400, origin);
+      }
+      if (
+        !/^[a-f0-9]{48}$/.test(body?.roomId) ||
+        !["offerer", "answerer"].includes(body?.role)
+      ) {
+        return jsonResponse({ error: "Invalid room request" }, 400, origin);
+      }
+
+      const room = env.SIGNAL_ROOMS.get(env.SIGNAL_ROOMS.idFromName(body.roomId));
+      const authorized = await room.fetch(
+        new Request(`https://internal/_authorize-ice?role=${body.role}`),
+      );
+      if (!authorized.ok) {
+        return jsonResponse({ error: "Signaling room is not connected" }, 403, origin);
+      }
+
+      if (!env.TURN_KEY_ID || !env.TURN_API_TOKEN) {
+        return jsonResponse({ iceServers: STUN_SERVERS, relayAvailable: false }, 200, origin);
+      }
+
+      const clientIp = request.headers.get("CF-Connecting-IP") || "unknown";
+      const limiter = env.SIGNAL_ROOMS.get(
+        env.SIGNAL_ROOMS.idFromName(`turn-rate:${clientIp}`),
+      );
+      const rateLimit = await limiter.fetch(new Request("https://internal/_rate-limit"));
+      if (!rateLimit.ok) {
+        return jsonResponse({ error: "Too many relay requests. Try again shortly." }, 429, origin);
+      }
+
+      let turnResponse;
+      try {
+        turnResponse = await fetch(
+          `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(env.TURN_KEY_ID)}/credentials/generate-ice-servers`,
+          {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${env.TURN_API_TOKEN}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ ttl: TURN_CREDENTIAL_TTL_SECONDS }),
+          },
+        );
+      } catch (error) {
+        console.error("Could not request Cloudflare TURN credentials", error);
+        return jsonResponse({ error: "Relay credentials are temporarily unavailable." }, 502, origin);
+      }
+      if (!turnResponse.ok) {
+        console.error("Cloudflare TURN credential request failed", turnResponse.status);
+        return jsonResponse({ error: "Relay credentials are temporarily unavailable." }, 502, origin);
+      }
+
+      let turnConfig;
+      try {
+        turnConfig = await turnResponse.json();
+      } catch {
+        console.error("Cloudflare TURN returned invalid JSON");
+        return jsonResponse({ error: "Relay credentials are temporarily unavailable." }, 502, origin);
+      }
+      if (!Array.isArray(turnConfig?.iceServers) || turnConfig.iceServers.length === 0) {
+        console.error("Cloudflare TURN returned no ICE servers");
+        return jsonResponse({ error: "Relay credentials are temporarily unavailable." }, 502, origin);
+      }
+
+      return jsonResponse({ iceServers: turnConfig.iceServers, relayAvailable: true }, 200, origin);
+    }
+
+    const match = url.pathname.match(/^\/room\/([a-f0-9]{48})$/);
+    const role = url.searchParams.get("role");
+    if (!match || !["offerer", "answerer"].includes(role)) {
+      return new Response("Not found", { status: 404 });
     }
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return new Response("WebSocket upgrade required", {
@@ -36,9 +133,31 @@ export default {
 
 export class SignalingRoom extends DurableObject {
   async fetch(request) {
-    const role = new URL(request.url).searchParams.get("role");
     const sockets = this.ctx.getWebSockets();
     const roles = sockets.map((socket) => socket.deserializeAttachment()?.role);
+    const url = new URL(request.url);
+
+    if (url.pathname === "/_authorize-ice") {
+      const role = url.searchParams.get("role");
+      return new Response(null, {
+        status: ["offerer", "answerer"].includes(role) && roles.includes(role) ? 204 : 403,
+      });
+    }
+
+    if (url.pathname === "/_rate-limit") {
+      const window = Math.floor(Date.now() / TURN_RATE_WINDOW_MS);
+      const allowed = await this.ctx.storage.transaction(async (transaction) => {
+        const state = await transaction.get("turnRate");
+        const count = state?.window === window ? state.count : 0;
+        if (count >= TURN_REQUEST_LIMIT) return false;
+        await transaction.put("turnRate", { window, count: count + 1 });
+        return true;
+      });
+      if (!allowed) return new Response(null, { status: 429 });
+      return new Response(null, { status: 204 });
+    }
+
+    const role = url.searchParams.get("role");
     if (sockets.length >= 2 || roles.includes(role)) {
       return new Response("Room is full", { status: 409 });
     }
