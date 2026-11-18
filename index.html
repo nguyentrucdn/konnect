@@ -136,13 +136,13 @@
               </div>
               <span class="small-icon" aria-hidden="true">⇧</span>
             </div>
-            <label id="drop-zone" class="drop-zone" for="file-input">
+            <label id="drop-zone" class="drop-zone" for="file-input" aria-disabled="true">
               <span class="upload-icon" aria-hidden="true">↑</span>
               <strong>Choose files to send</strong>
               <span>or drop them here</span>
-              <input id="file-input" type="file" multiple>
+              <input id="file-input" type="file" multiple disabled>
             </label>
-            <p id="transfer-status" class="hint" role="status">Files are shared with everyone in the room.</p>
+            <p id="transfer-status" class="hint" role="status">Waiting for another person to connect before sharing files.</p>
             <ul id="transfer-list" class="transfer-list" aria-live="polite"></ul>
           </section>
 
@@ -159,8 +159,8 @@
             </div>
             <form id="chat-form" class="chat-form">
               <label class="sr-only" for="chat-input">Write a message</label>
-              <textarea id="chat-input" rows="2" placeholder="Write a message…" maxlength="4000"></textarea>
-              <button class="button button-primary send-button" type="submit" aria-label="Send message">Send <span aria-hidden="true">↑</span></button>
+              <textarea id="chat-input" rows="2" placeholder="Waiting for another person to connect…" maxlength="4000" disabled></textarea>
+              <button class="button button-primary send-button" type="submit" aria-label="Send message" disabled>Send <span aria-hidden="true">↑</span></button>
             </form>
           </section>
         </div>

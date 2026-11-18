@@ -23,9 +23,12 @@ const roomSize = document.querySelector("#room-size");
 const roomCount = document.querySelector("#room-count");
 const transferStatus = document.querySelector("#transfer-status");
 const transferList = document.querySelector("#transfer-list");
+const fileInput = document.querySelector("#file-input");
+const dropZone = document.querySelector("#drop-zone");
 const chatMessages = document.querySelector("#chat-messages");
 const chatForm = document.querySelector("#chat-form");
 const chatInput = document.querySelector("#chat-input");
+const chatSendButton = chatForm.querySelector('button[type="submit"]');
 const scannerDialog = document.querySelector("#scanner-dialog");
 const scannerVideo = document.querySelector("#scanner-video");
 const scannerStatus = document.querySelector("#scanner-status");
@@ -398,6 +401,7 @@ function configureDataChannel(channel) {
     }
     showView(connectedView);
     chatInput.focus();
+    updateRoomAvailability();
   });
   channel.addEventListener("close", () => {
     if (!connectedView.hidden) {
@@ -424,6 +428,25 @@ function updateRoomSize(count = roomParticipants.size + 1) {
   const text = `${count}/${roomMaxUsers} people in the room`;
   roomSize.textContent = text;
   roomCount.textContent = text;
+}
+
+function updateRoomAvailability() {
+  const ready = roomMode
+    ? getOpenRoomChannels().length > 0
+    : dataChannel?.readyState === "open";
+  fileInput.disabled = !ready;
+  dropZone.setAttribute("aria-disabled", String(!ready));
+  chatInput.disabled = !ready;
+  chatSendButton.disabled = !ready;
+  if (ready) {
+    chatInput.placeholder = "Write a message…";
+    transferStatus.textContent = roomMode
+      ? "Files are shared with everyone in the room."
+      : "Files are sent only to your connected peer.";
+  } else {
+    chatInput.placeholder = "Waiting for another person to connect…";
+    transferStatus.textContent = "Waiting for another person to connect before sharing files.";
+  }
 }
 
 async function recordPageLoad() {
@@ -517,6 +540,7 @@ function configureRoomDataChannel(channel, connection, participantId, participan
     showView(connectedView);
     document.querySelector("#copy-room-invite-button").hidden = !isRoomHost;
     updateRoomSize();
+    updateRoomAvailability();
     chatInput.focus();
     if (isRoomHost) broadcastRoomPresence();
   });
@@ -528,6 +552,7 @@ function configureRoomDataChannel(channel, connection, participantId, participan
         roomConnections.delete(participantId);
         roomParticipants.delete(participantId);
         broadcastRoomPresence();
+        updateRoomAvailability();
         if (roomConnections.size === 0) showView(offerView);
       }
     } else if (dataChannel === channel && roomMode) {
@@ -600,6 +625,7 @@ function resetPeerConnection() {
   isRoomHost = false;
   roomSize.textContent = "";
   roomCount.textContent = "1/2 people in the room";
+  updateRoomAvailability();
 }
 
 async function createRoom() {
@@ -661,6 +687,7 @@ async function handleRoomSignaling(signaling, iceConfig) {
       roomConnections.delete(message.participantId);
       roomParticipants.delete(message.participantId);
       broadcastRoomPresence();
+      updateRoomAvailability();
       if (roomConnections.size === 0) showView(offerView);
     }
   }
@@ -1163,12 +1190,11 @@ document.querySelector("#scan-join-button").addEventListener("click", () => void
 document.querySelector("#close-scanner-button").addEventListener("click", () => scannerDialog.close());
 scannerDialog.addEventListener("close", stopScanner);
 
-document.querySelector("#file-input").addEventListener("change", (event) => {
+fileInput.addEventListener("change", (event) => {
   void sendFiles(event.target.files);
   event.target.value = "";
 });
 
-const dropZone = document.querySelector("#drop-zone");
 dropZone.addEventListener("dragover", (event) => {
   event.preventDefault();
   dropZone.classList.add("dragging");
@@ -1187,14 +1213,23 @@ chatForm.addEventListener("submit", (event) => {
   const message = { type: "chat", text, senderName: localName };
   if (roomMode) {
     if (isRoomHost) {
-      if (!getOpenRoomChannels().length) return;
+      if (!getOpenRoomChannels().length) {
+        updateRoomAvailability();
+        return;
+      }
       sendRoomPayload(message);
     } else {
-      if (!dataChannel || dataChannel.readyState !== "open") return;
+      if (!dataChannel || dataChannel.readyState !== "open") {
+        updateRoomAvailability();
+        return;
+      }
       dataChannel.send(JSON.stringify(message));
     }
   } else {
-    if (!dataChannel || dataChannel.readyState !== "open") return;
+    if (!dataChannel || dataChannel.readyState !== "open") {
+      updateRoomAvailability();
+      return;
+    }
     dataChannel.send(JSON.stringify(message));
   }
   appendMessage(text, true);
