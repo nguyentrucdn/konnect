@@ -10,6 +10,7 @@ const offerView = document.querySelector("#offer-view");
 const connectedView = document.querySelector("#connected-view");
 const createButton = document.querySelector("#create-button");
 const joinForm = document.querySelector("#join-form");
+const joinButton = joinForm.querySelector('button[type="submit"]');
 const joinCode = document.querySelector("#join-code");
 const joinStatus = document.querySelector("#join-status");
 const answerPanel = document.querySelector("#answer-panel");
@@ -35,6 +36,7 @@ let toastTimeout;
 let lastScanTime = 0;
 let currentInviteUrl = "";
 let signalingSession;
+let isJoining = false;
 const scanCanvas = document.createElement("canvas");
 const scanContext = scanCanvas.getContext("2d", { willReadFrequently: true });
 
@@ -377,6 +379,9 @@ async function createRoom() {
 }
 
 async function joinRoom(code) {
+  if (isJoining) return;
+  isJoining = true;
+  joinButton.disabled = true;
   setupError.hidden = true;
   setJoinStatus("");
   try {
@@ -402,7 +407,11 @@ async function joinRoom(code) {
   } catch (error) {
     resetPeerConnection();
     answerPanel.hidden = true;
+    setJoinStatus("");
     showSetupError(error.message);
+  } finally {
+    isJoining = false;
+    joinButton.disabled = false;
   }
 }
 
