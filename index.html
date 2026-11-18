@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f6f7f4">
+    <meta name="description" content="Share files and chat directly with another browser. No account or app server required.">
+    <title>Konnect — private peer-to-peer sharing</title>
+    <link rel="stylesheet" href="styles.css">
+    <script defer src="vendor/qrcode-generator.js"></script>
+    <script defer src="vendor/qrcode-utf8.js"></script>
+    <script defer src="app.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="Konnect home">
+        <span class="brand-mark" aria-hidden="true">k</span>
+        <span>konnect</span>
+      </a>
+      <span class="privacy-note"><span class="status-dot"></span> Peer to peer. No account.</span>
+    </header>
+
+    <main class="shell">
+      <section class="intro">
+        <p class="eyebrow">A direct connection between browsers</p>
+        <h1>Share things.<br><span>Not your data.</span></h1>
+        <p class="intro-copy">Send files and messages directly to someone else. Connect by scanning a QR code or sharing a short code — no sign-up, app server, or file storage.</p>
+      </section>
+
+      <section id="setup-view" class="view">
+        <div class="setup-grid">
+          <article class="card create-card">
+            <div class="card-icon" aria-hidden="true">↗</div>
+            <p class="eyebrow">Start a connection</p>
+            <h2>Create a room</h2>
+            <p>Make a one-time code and share it with the person you want to connect with.</p>
+            <button id="create-button" class="button button-primary" type="button">Create room <span aria-hidden="true">→</span></button>
+          </article>
+
+          <article class="card join-card">
+            <div class="card-icon card-icon-lilac" aria-hidden="true">↙</div>
+            <p class="eyebrow">Have a connection code?</p>
+            <h2>Join a room</h2>
+            <form id="join-form">
+              <label class="sr-only" for="join-code">Paste the room code</label>
+              <textarea id="join-code" rows="3" placeholder="Paste the other person’s code here" spellcheck="false" autocomplete="off"></textarea>
+              <div class="form-actions">
+                <button id="scan-join-button" class="button button-secondary" type="button">Scan QR</button>
+                <button class="button button-primary" type="submit">Join room <span aria-hidden="true">→</span></button>
+              </div>
+            </form>
+            <div id="answer-panel" class="answer-panel" hidden>
+              <div class="rule"></div>
+              <p class="eyebrow">One last step</p>
+              <h3>Send your reply code</h3>
+              <p>Share this code back with the person who created the room.</p>
+              <div class="qr-wrap"><canvas id="answer-qr" width="240" height="240"></canvas></div>
+              <label class="sr-only" for="answer-code">Your reply code</label>
+              <textarea id="answer-code" rows="3" readonly spellcheck="false"></textarea>
+              <div class="form-actions">
+                <button id="copy-answer-button" class="button button-secondary" type="button">Copy code</button>
+              </div>
+              <p class="hint">Keep this page open while the other person enters your code.</p>
+            </div>
+          </article>
+        </div>
+        <p id="setup-error" class="notice notice-error" role="alert" hidden></p>
+        <p class="footnote">Connection codes contain temporary network details. Only share them with someone you trust.</p>
+      </section>
+
+      <section id="offer-view" class="view card exchange-card" hidden>
+        <button id="back-button" class="back-button" type="button">← Start over</button>
+        <p class="eyebrow">Room created</p>
+        <h2>Share this code</h2>
+        <p>Ask the other person to scan this QR or paste the code into “Join a room”.</p>
+        <div class="qr-wrap"><canvas id="offer-qr" width="240" height="240"></canvas></div>
+        <label class="sr-only" for="offer-code">Your room code</label>
+        <textarea id="offer-code" rows="3" readonly spellcheck="false"></textarea>
+        <div class="form-actions">
+          <button id="copy-offer-button" class="button button-secondary" type="button">Copy code</button>
+        </div>
+        <div class="rule"></div>
+        <p class="eyebrow">Waiting for their reply</p>
+        <p>When they send back their reply code, paste it here.</p>
+        <form id="answer-form">
+          <label class="sr-only" for="remote-answer">Paste their reply code</label>
+          <textarea id="remote-answer" rows="3" placeholder="Paste their reply code here" spellcheck="false" autocomplete="off"></textarea>
+          <div class="form-actions">
+            <button id="scan-remote-answer-button" class="button button-secondary" type="button">Scan QR</button>
+            <button class="button button-primary" type="submit">Connect <span aria-hidden="true">→</span></button>
+          </div>
+        </form>
+        <p id="connection-status" class="hint" role="status">Preparing a direct connection…</p>
+      </section>
+
+      <section id="connected-view" class="view" hidden>
+        <div class="connected-heading">
+          <div>
+            <p class="eyebrow">Encrypted peer-to-peer connection</p>
+            <h2>Connected securely <span class="connected-indicator" aria-hidden="true"></span></h2>
+            <p>WebRTC DTLS encrypts messages and files in transit directly between these browsers.</p>
+          </div>
+          <button id="disconnect-button" class="button button-secondary" type="button">Disconnect</button>
+        </div>
+        <div class="workspace-grid">
+          <section class="card transfer-card" aria-labelledby="files-heading">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Direct transfer</p>
+                <h3 id="files-heading">Files</h3>
+              </div>
+              <span class="small-icon" aria-hidden="true">⇧</span>
+            </div>
+            <label id="drop-zone" class="drop-zone" for="file-input">
+              <span class="upload-icon" aria-hidden="true">↑</span>
+              <strong>Choose files to send</strong>
+              <span>or drop them here</span>
+              <input id="file-input" type="file" multiple>
+            </label>
+            <p id="transfer-status" class="hint" role="status">Files are sent only to your connected peer.</p>
+            <ul id="transfer-list" class="transfer-list" aria-live="polite"></ul>
+          </section>
+
+          <section class="card chat-card" aria-labelledby="chat-heading">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Private messages</p>
+                <h3 id="chat-heading">Chat</h3>
+              </div>
+              <span class="small-icon" aria-hidden="true">↗</span>
+            </div>
+            <div id="chat-messages" class="chat-messages" role="log" aria-live="polite" aria-relevant="additions">
+              <p class="chat-empty">Say hello or send a file to get started.</p>
+            </div>
+            <form id="chat-form" class="chat-form">
+              <label class="sr-only" for="chat-input">Write a message</label>
+              <textarea id="chat-input" rows="2" placeholder="Write a message…" maxlength="4000"></textarea>
+              <button class="button button-primary send-button" type="submit" aria-label="Send message">Send <span aria-hidden="true">↑</span></button>
+            </form>
+          </section>
+        </div>
+      </section>
+
+      <p id="toast" class="toast" role="status" hidden></p>
+    </main>
+
+    <dialog id="scanner-dialog" class="scanner-dialog">
+      <div class="scanner-header">
+        <div>
+          <p class="eyebrow">Quick connect</p>
+          <h2>Scan a QR code</h2>
+        </div>
+        <button id="close-scanner-button" class="close-button" type="button" aria-label="Close scanner">×</button>
+      </div>
+      <video id="scanner-video" muted playsinline></video>
+      <p id="scanner-status" class="hint" role="status">Allow camera access to scan a connection code.</p>
+    </dialog>
+
+    <footer class="footer">
+      <span>Made for sharing, not storing.</span>
+      <span>WebRTC DTLS encryption · No data relay or file server</span>
+    </footer>
+  </body>
+</html>
