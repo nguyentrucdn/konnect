@@ -151,8 +151,8 @@ function waitForIceGathering(connection) {
   return new Promise((resolve, reject) => {
     const timeout = window.setTimeout(() => {
       connection.removeEventListener("icegatheringstatechange", onStateChange);
-      reject(new Error("Gathering connection details took too long. Check your internet connection and try again."));
-    }, 20000);
+      reject(new Error("ICE route discovery took longer than a minute. Check your connection or try another network, then create a new room."));
+    }, 60000);
     function onStateChange() {
       if (connection.iceGatheringState !== "complete") return;
       window.clearTimeout(timeout);
@@ -397,13 +397,13 @@ async function createRoom() {
     configureDataChannel(connection.createDataChannel("konnect", { ordered: true }));
     const offer = await connection.createOffer();
     await connection.setLocalDescription(offer);
-    setConnectionStatus("Preparing a direct connection…");
-    showView(offerView);
-    await waitForIceGathering(connection);
-    sendSignal(signaling, { type: "offer", sdp: connection.localDescription.sdp });
     currentInviteUrl = makeInviteUrl(roomId);
     document.querySelector("#offer-code").value = roomId;
     drawQr(document.querySelector("#offer-qr"), currentInviteUrl);
+    setConnectionStatus("Invite ready. Preparing connection details…");
+    showView(offerView);
+    await waitForIceGathering(connection);
+    sendSignal(signaling, { type: "offer", sdp: connection.localDescription.sdp });
     setConnectionStatus("Waiting for the other person to connect…");
     void waitForSignal(signaling, "answer").then(async (answer) => {
       if (!peerConnection || peerConnection !== connection) return;
