@@ -26,7 +26,9 @@ body {
 }
 
 button,
-textarea {
+textarea,
+input,
+select {
   font: inherit;
 }
 
@@ -145,6 +147,39 @@ h1 span {
   gap: 20px;
 }
 
+.identity-field {
+  max-width: 420px;
+  margin: 0 auto 20px;
+}
+
+.identity-field label,
+.field-label {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.identity-field input,
+.create-card select {
+  width: 100%;
+  min-height: 43px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  outline: none;
+  color: var(--ink);
+  background: #fcfdfc;
+  font-size: 13px;
+}
+
+.identity-field input:focus,
+.create-card select:focus {
+  border-color: #83b69a;
+  box-shadow: 0 0 0 3px rgb(35 123 85 / 10%);
+}
+
 .card {
   border: 1px solid var(--line);
   border-radius: 18px;
@@ -240,6 +275,10 @@ h3 {
 
 .create-card > .button {
   margin-top: 14px;
+}
+
+.create-card select {
+  display: block;
 }
 
 textarea {
@@ -381,10 +420,29 @@ textarea[readonly] {
   margin-bottom: 23px;
 }
 
+.connected-heading > div {
+  flex: 1;
+}
+
 .connected-heading h2 {
   display: flex;
   align-items: center;
   gap: 11px;
+}
+
+.room-size {
+  max-width: 210px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+.room-count {
+  margin: 8px 0 0;
+  color: var(--green);
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .connected-indicator {

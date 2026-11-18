@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#f6f7f4">
-    <meta name="description" content="Share files and chat between browsers, with an encrypted relay fallback when needed. No account or file storage required.">
-    <title>Konnect — private peer-to-peer sharing</title>
+    <meta name="description" content="Chat and share files in a one-time group room. The creator's browser relays room data; no account or file storage required.">
+    <title>Konnect — private group sharing</title>
     <link rel="stylesheet" href="styles.css">
     <script defer src="vendor/qrcode-generator.js"></script>
     <script defer src="vendor/qrcode-utf8.js"></script>
@@ -19,23 +19,49 @@
         <span class="brand-mark" aria-hidden="true">k</span>
         <span>konnect</span>
       </a>
-      <span class="privacy-note"><span class="status-dot"></span> Peer to peer. No account.</span>
+      <span class="privacy-note"><span class="status-dot"></span> Encrypted connections. No account.</span>
     </header>
 
     <main class="shell">
       <section class="intro">
-        <p class="eyebrow">A direct connection between browsers</p>
-        <h1>Share things.<br><span>Not your data.</span></h1>
-        <p class="intro-copy">Send files and messages directly when possible, with an encrypted relay fallback for restrictive networks. Connect by scanning a QR code or sharing a short code — no sign-up or file storage.</p>
+        <p class="eyebrow">A private room for your group</p>
+        <h1>Share together.<br><span>Stay connected.</span></h1>
+        <p class="intro-copy">Chat and share files in a one-time room. The creator’s browser connects the group — no sign-up or file storage.</p>
       </section>
 
       <section id="setup-view" class="view">
+        <div class="identity-field">
+          <label for="display-name">Your name</label>
+          <input id="display-name" type="text" maxlength="24" autocomplete="nickname" placeholder="Choose a name" required>
+        </div>
         <div class="setup-grid">
           <article class="card create-card">
             <div class="card-icon" aria-hidden="true">↗</div>
             <p class="eyebrow">Start a connection</p>
             <h2>Create a room</h2>
-            <p>Make a one-time code and share it with the person you want to connect with.</p>
+            <p>Make a one-time invite and choose how many people can join.</p>
+            <label class="field-label" for="room-cap">Maximum users, including you</label>
+            <select id="room-cap">
+              <option value="2" selected>2 users</option>
+              <option value="3">3 users</option>
+              <option value="4">4 users</option>
+              <option value="5">5 users</option>
+              <option value="6">6 users</option>
+              <option value="7">7 users</option>
+              <option value="8">8 users</option>
+              <option value="9">9 users</option>
+              <option value="10">10 users</option>
+              <option value="11">11 users</option>
+              <option value="12">12 users</option>
+              <option value="13">13 users</option>
+              <option value="14">14 users</option>
+              <option value="15">15 users</option>
+              <option value="16">16 users</option>
+              <option value="17">17 users</option>
+              <option value="18">18 users</option>
+              <option value="19">19 users</option>
+              <option value="20">20 users</option>
+            </select>
             <button id="create-button" class="button button-primary" type="button">Create room <span aria-hidden="true">→</span></button>
           </article>
 
@@ -75,7 +101,7 @@
         <button id="back-button" class="back-button" type="button">← Start over</button>
         <p class="eyebrow">Room created</p>
         <h2>Share this code</h2>
-        <p>Ask the other person to scan with their iPhone Camera. The invite opens this page and exchanges connection details automatically.</p>
+        <p>Share the invite with your group. Each person can scan it or paste the room code and choose a name.</p>
         <div class="qr-wrap"><canvas id="offer-qr" width="240" height="240"></canvas></div>
         <label class="sr-only" for="offer-code">Your room code</label>
         <textarea id="offer-code" rows="3" readonly spellcheck="false"></textarea>
@@ -84,8 +110,9 @@
           <button id="copy-offer-button" class="button button-secondary" type="button">Copy code</button>
         </div>
         <div class="rule"></div>
-        <p class="eyebrow">Waiting for the other person</p>
-        <p>The signaling service exchanges connection details only. Files and chat use a direct route when possible; a TURN relay may carry encrypted data if needed.</p>
+        <p class="eyebrow">Waiting for your group</p>
+        <p>Your browser connects each participant and relays room chat and files. Only people with the invite can try to join; the room closes when you disconnect.</p>
+        <p id="room-count" class="room-count" role="status">1/2 people in the room</p>
         <p id="connection-status" class="hint" role="status">Preparing a direct connection…</p>
       </section>
 
@@ -94,8 +121,10 @@
           <div>
             <p class="eyebrow">Encrypted connection</p>
             <h2>Connected securely <span class="connected-indicator" aria-hidden="true"></span></h2>
-            <p>WebRTC DTLS encrypts messages and files in transit, whether they travel directly or through a relay.</p>
+            <p>WebRTC encrypts each connection. The room creator’s browser can read and relay messages and files.</p>
           </div>
+          <p id="room-size" class="room-size" role="status"></p>
+          <button id="copy-room-invite-button" class="button button-secondary" type="button" hidden>Copy invite</button>
           <button id="disconnect-button" class="button button-secondary" type="button">Disconnect</button>
         </div>
         <div class="workspace-grid">
@@ -113,14 +142,14 @@
               <span>or drop them here</span>
               <input id="file-input" type="file" multiple>
             </label>
-            <p id="transfer-status" class="hint" role="status">Files are sent only to your connected peer.</p>
+            <p id="transfer-status" class="hint" role="status">Files are shared with everyone in the room.</p>
             <ul id="transfer-list" class="transfer-list" aria-live="polite"></ul>
           </section>
 
           <section class="card chat-card" aria-labelledby="chat-heading">
             <div class="section-heading">
               <div>
-                <p class="eyebrow">Private messages</p>
+                <p class="eyebrow">Room messages</p>
                 <h3 id="chat-heading">Chat</h3>
               </div>
               <span class="small-icon" aria-hidden="true">↗</span>
@@ -154,7 +183,7 @@
 
     <footer class="footer">
       <span>Made for sharing, not storing.</span>
-      <span>WebRTC DTLS encryption · No file storage</span>
+      <span id="visit-count" role="status">Website page loads: counting…</span>
     </footer>
   </body>
 </html>

@@ -1,8 +1,8 @@
 # Konnect
 
-Konnect is a browser-based file sharing and chat app. GitHub Pages hosts the static frontend, and a Cloudflare Worker performs temporary WebRTC signaling and brokers TURN credentials. Files and chat use an encrypted WebRTC data channel, sent directly when possible or through a TURN relay when the network blocks a direct route. Konnect has no accounts or file storage.
+Konnect is a browser-based group file sharing and chat app. GitHub Pages hosts the static frontend, and a Cloudflare Worker performs temporary WebRTC signaling, brokers TURN credentials, and maintains an aggregate page-load count. Room participants connect directly to the creator's browser, which relays chat and files to the group. Konnect has no accounts or file storage.
 
-WebRTC data channels use DTLS encryption in transit. Konnect checks that the negotiated DTLS transport is connected before enabling chat or file sharing and fails closed if it cannot verify that state. There is no plaintext fallback. The browsers handle key negotiation; the app does not store or separately encrypt data.
+WebRTC data channels use DTLS encryption in transit. Konnect checks that each negotiated DTLS transport is connected before enabling chat or file sharing and fails closed if it cannot verify that state. The room creator's browser receives and can read all room messages and files before forwarding them. There is no plaintext fallback. The app does not store room messages or files.
 
 ## Publish on GitHub Pages
 
@@ -16,7 +16,7 @@ HTTPS is needed for camera scanning and clipboard access. QR scanning uses a loc
 
 ## Signaling service
 
-The Cloudflare Worker exchanges WebRTC offer/answer descriptions and obtains TURN ICE server details from Metered Open Relay for peers already connected to a room. It accepts a maximum of two peers per room, uses random 192-bit room IDs, restricts browser origins to `https://nguyentrucdn.github.io`, and expires room state after five minutes. It does not carry chat messages or file data; Metered's TURN service may relay encrypted WebRTC packets when direct ICE candidates fail. The Worker URL is injected into the deployed static site by the GitHub Actions workflow. If you use a custom Pages domain, update `ALLOWED_ORIGINS` in `signal/wrangler.jsonc`.
+The Cloudflare Worker exchanges WebRTC offer/answer descriptions and obtains TURN ICE server details from Metered Open Relay. The creator selects a room limit from 2 to 20 people (including the creator); each person chooses a display name. The creator's browser makes a separate WebRTC connection to each participant and relays room chat and files. The Worker uses random 192-bit room IDs, restricts browser origins to `https://nguyentrucdn.github.io`, and expires room state after five minutes. The Worker does not proxy room chat or file data; TURN may relay the DTLS-encrypted WebRTC packets when direct routes fail. The Worker also increments a global page-load counter without storing visitor identities. The Worker URL is injected into the deployed static site by the GitHub Actions workflow. If you use a custom Pages domain, update `ALLOWED_ORIGINS` in `signal/wrangler.jsonc`.
 
 The Worker uses a SQLite-backed Durable Object. Cloudflare's Free plan currently supports SQLite-backed Durable Objects; see [Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/). TURN credentials are fetched only by active room participants and requests are rate-limited per client IP. If TURN credentials are not configured, Konnect keeps its STUN-only behavior and warns that some networks may not connect.
 
@@ -29,9 +29,9 @@ The API key is stored as a Worker secret and never included in the static site. 
 
 ## Connect
 
-1. One person selects **Create room** and shares the displayed QR code or invite link.
-2. The other person scans the QR with their iPhone Camera (or another QR reader). The invite opens Konnect and automatically exchanges the WebRTC signaling data.
-3. Once the encrypted connection is established, either person can chat or send files.
+1. Everyone chooses a display name. The creator selects a maximum room size (2 by default), creates the room, and shares the QR code or invite link.
+2. Participants scan the QR with their iPhone Camera (or another QR reader), choose a name, and join. The creator's browser connects each participant and relays room messages and files.
+3. Once the encrypted connections are established, people in the room can chat or send files. The creator must remain connected for the room to work.
 
 The invite link contains a random room ID in its URL fragment; the SDP offer is exchanged through the signaling service and is not placed in the URL. Fragments are not sent to the website server, and Konnect removes the fragment from the address bar after reading it. The app uses STUN for direct route discovery and Metered Open Relay as a fallback when configured. TURN traffic remains DTLS-encrypted.
 

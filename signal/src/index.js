@@ -2,16 +2,31 @@ import { DurableObject } from "cloudflare:workers";
 
 const ROOM_LIFETIME_MS = 5 * 60 * 1000;
 const MAX_SIGNAL_BYTES = 32 * 1024;
+const MAX_ROOM_USERS = 20;
 const TURN_REQUEST_LIMIT = 20;
 const TURN_RATE_WINDOW_MS = 60 * 1000;
 const STUN_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+
+function validName(name) {
+  return typeof name === "string" &&
+    name === name.trim() &&
+    Array.from(name).length > 0 &&
+    Array.from(name).length <= 24 &&
+    !/[\u0000-\u001f\u007f]/.test(name);
+}
+
+function validSdp(sdp) {
+  return typeof sdp === "string" &&
+    sdp.startsWith("v=0") &&
+    new TextEncoder().encode(sdp).byteLength <= MAX_SIGNAL_BYTES;
+}
 
 function jsonResponse(body, status, origin) {
   return new Response(status === 204 ? null : JSON.stringify(body), {
     status,
     headers: {
       "access-control-allow-headers": "content-type",
-      "access-control-allow-methods": "POST, OPTIONS",
+      "access-control-allow-methods": "GET, POST, OPTIONS",
       "access-control-allow-origin": origin,
       "cache-control": "no-store",
       "content-type": "application/json",
@@ -33,6 +48,21 @@ export default {
       return new Response("Origin not allowed", { status: 403 });
     }
 
+    if (url.pathname === "/visits") {
+      if (request.method === "OPTIONS") {
+        return jsonResponse({}, 204, origin);
+      }
+      if (request.method !== "GET") {
+        return jsonResponse({ error: "Method not allowed" }, 405, origin);
+      }
+      const counter = env.SIGNAL_ROOMS.get(env.SIGNAL_ROOMS.idFromName("site-visits"));
+      const response = await counter.fetch(new Request("https://internal/_record-visit"));
+      if (!response.ok) {
+        return jsonResponse({ error: "Could not record this page load." }, 503, origin);
+      }
+      return jsonResponse(await response.json(), 200, origin);
+    }
+
     if (url.pathname === "/ice-servers") {
       if (request.method === "OPTIONS") {
         return jsonResponse({}, 204, origin);
@@ -47,19 +77,24 @@ export default {
       } catch {
         return jsonResponse({ error: "Invalid request" }, 400, origin);
       }
-      if (
-        !/^[a-f0-9]{48}$/.test(body?.roomId) ||
-        !["offerer", "answerer"].includes(body?.role)
-      ) {
+      if (!/^[a-f0-9]{48}$/.test(body?.roomId) ||
+          !["creator", "participant"].includes(body?.role) ||
+          (body.role === "participant" && !/^[a-f0-9]{32}$/.test(body?.participantId || ""))) {
         return jsonResponse({ error: "Invalid room request" }, 400, origin);
       }
 
       const room = env.SIGNAL_ROOMS.get(env.SIGNAL_ROOMS.idFromName(body.roomId));
       const authorized = await room.fetch(
-        new Request(`https://internal/_authorize-ice?role=${body.role}`),
+        new Request(
+          `https://internal/_authorize-ice?role=${body.role}&participantId=${body.participantId || ""}`,
+        ),
       );
       if (!authorized.ok) {
-        return jsonResponse({ error: "Signaling room is not connected" }, 403, origin);
+        const status = authorized.status;
+        const error = status === 409
+          ? "This room is full."
+          : "The room creator is not connected.";
+        return jsonResponse({ error }, status, origin);
       }
 
       if (!env.METERED_TURN_APP || !env.METERED_TURN_API_KEY) {
@@ -113,7 +148,16 @@ export default {
 
     const match = url.pathname.match(/^\/room\/([a-f0-9]{48})$/);
     const role = url.searchParams.get("role");
-    if (!match || !["offerer", "answerer"].includes(role)) {
+    const name = url.searchParams.get("name");
+    const maxUsers = Number(url.searchParams.get("maxUsers"));
+    const participantId = url.searchParams.get("participantId");
+    if (
+      !match ||
+      !["creator", "participant"].includes(role) ||
+      !validName(name) ||
+      (role === "creator" && (!Number.isInteger(maxUsers) || maxUsers < 2 || maxUsers > MAX_ROOM_USERS)) ||
+      (role === "participant" && !/^[a-f0-9]{32}$/.test(participantId || ""))
+    ) {
       return new Response("Not found", { status: 404 });
     }
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
@@ -132,14 +176,39 @@ export default {
 export class SignalingRoom extends DurableObject {
   async fetch(request) {
     const sockets = this.ctx.getWebSockets();
-    const roles = sockets.map((socket) => socket.deserializeAttachment()?.role);
     const url = new URL(request.url);
+
+    if (url.pathname === "/_record-visit") {
+      const count = await this.ctx.storage.transaction(async (transaction) => {
+        const current = await transaction.get("siteVisits") || 0;
+        const next = current + 1;
+        await transaction.put("siteVisits", next);
+        return next;
+      });
+      return new Response(JSON.stringify({ count }), {
+        headers: { "cache-control": "no-store", "content-type": "application/json" },
+      });
+    }
 
     if (url.pathname === "/_authorize-ice") {
       const role = url.searchParams.get("role");
-      return new Response(null, {
-        status: ["offerer", "answerer"].includes(role) && roles.includes(role) ? 204 : 403,
-      });
+      const participantId = url.searchParams.get("participantId");
+      const creatorConnected = sockets.some(
+        (socket) => socket.deserializeAttachment()?.role === "creator",
+      );
+      if (!creatorConnected) return new Response(null, { status: 403 });
+      if (role === "creator") {
+        return new Response(null, {
+          status: sockets.some((socket) => socket.deserializeAttachment()?.role === "creator") ? 204 : 403,
+        });
+      }
+      if (role === "participant") {
+        const participants = await this.ctx.storage.get("participants") || {};
+        return new Response(null, {
+          status: Object.hasOwn(participants, participantId) ? 204 : 403,
+        });
+      }
+      return new Response(null, { status: 403 });
     }
 
     if (url.pathname === "/_rate-limit") {
@@ -156,25 +225,82 @@ export class SignalingRoom extends DurableObject {
     }
 
     const role = url.searchParams.get("role");
-    if (sockets.length >= 2 || roles.includes(role)) {
-      return new Response("Room is full", { status: 409 });
+    const name = url.searchParams.get("name");
+    const maxUsers = Number(url.searchParams.get("maxUsers"));
+    const participantId = url.searchParams.get("participantId");
+    const creator = sockets.find(
+      (socket) => socket.deserializeAttachment()?.role === "creator",
+    );
+    let config;
+    let reservedParticipant = false;
+
+    if (role === "creator") {
+      if (creator) return this.rejectSocket("This room has already been created.");
+      const created = await this.ctx.storage.transaction(async (transaction) => {
+        if (await transaction.get("roomConfig")) return false;
+        await transaction.put("roomConfig", { maxUsers });
+        await transaction.put("participants", {});
+        return true;
+      });
+      if (!created) return this.rejectSocket("This room has already been created.");
+    } else {
+      if (!creator) return this.rejectSocket("The room creator is not connected.");
+      const reservation = await this.ctx.storage.transaction(async (transaction) => {
+        const roomConfig = await transaction.get("roomConfig");
+        if (!roomConfig) return { error: "The room creator is not connected." };
+        const participants = await transaction.get("participants") || {};
+        if (Object.hasOwn(participants, participantId)) {
+          return { error: "You are already connected to this room." };
+        }
+        if (Object.keys(participants).length >= roomConfig.maxUsers - 1) {
+          return { error: "This room is full." };
+        }
+        participants[participantId] = name;
+        await transaction.put("participants", participants);
+        return { config: roomConfig };
+      });
+      if (reservation.error) return this.rejectSocket(reservation.error);
+      config = reservation.config;
+      reservedParticipant = true;
     }
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
-    this.ctx.acceptWebSocket(server, [role]);
-    server.serializeAttachment({ role });
+    const attachment = role === "creator"
+      ? { role, name, maxUsers }
+      : { role, name, participantId };
+    try {
+      this.ctx.acceptWebSocket(server, [role]);
+      server.serializeAttachment(attachment);
+    } catch (error) {
+      if (role === "creator") {
+        await this.ctx.storage.deleteAll();
+      } else if (reservedParticipant) {
+        await this.ctx.storage.transaction(async (transaction) => {
+          const participants = await transaction.get("participants") || {};
+          delete participants[participantId];
+          await transaction.put("participants", participants);
+        });
+      }
+      throw error;
+    }
 
     if ((await this.ctx.storage.getAlarm()) === null) {
       await this.ctx.storage.setAlarm(Date.now() + ROOM_LIFETIME_MS);
     }
-
-    if (role === "answerer") {
-      const offer = await this.ctx.storage.get("offer");
-      if (offer) {
-        server.send(offer);
-        await this.ctx.storage.delete("offer");
-      }
+    if (role === "creator") {
+      server.send(JSON.stringify({ type: "room-ready", maxUsers }));
+    } else {
+      server.send(JSON.stringify({
+        type: "room-ready",
+        creatorName: creator.deserializeAttachment()?.name,
+        maxUsers: config.maxUsers,
+      }));
+      creator.send(JSON.stringify({
+        type: "participant-joined",
+        participantId,
+        name,
+      }));
     }
 
     return new Response(null, { status: 101, webSocket: client });
@@ -194,50 +320,79 @@ export class SignalingRoom extends DurableObject {
       return;
     }
 
-    const role = socket.deserializeAttachment()?.role;
-    const expectedType = role === "offerer" ? "offer" : "answer";
-    if (
-      !["offerer", "answerer"].includes(role) ||
-      message?.type !== expectedType ||
-      typeof message.sdp !== "string" ||
-      !message.sdp.startsWith("v=0")
-    ) {
+    const attachment = socket.deserializeAttachment();
+    const sockets = this.ctx.getWebSockets();
+    if (attachment?.role === "creator" && message?.type === "disconnect") {
+      const participant = sockets.find((candidate) => {
+        const candidateAttachment = candidate.deserializeAttachment();
+        return candidateAttachment?.role === "participant" &&
+          candidateAttachment.participantId === message.participantId;
+      });
+      participant?.close(4002, "The room creator could not connect you");
+      return;
+    }
+
+    if (!validSdp(message?.sdp) ||
+        (attachment?.role === "creator" && message.type !== "offer") ||
+        (attachment?.role === "participant" && message.type !== "answer")) {
       this.sendError(socket, "Invalid signaling description");
       return;
     }
 
-    const payload = JSON.stringify({ type: expectedType, sdp: message.sdp });
-    if (new TextEncoder().encode(payload).byteLength > MAX_SIGNAL_BYTES) {
-      this.sendError(socket, "Signaling description is too large");
-      return;
-    }
-
-    if (role === "offerer") {
-      if (await this.ctx.storage.get("offerSent")) {
-        this.sendError(socket, "An offer was already sent for this room");
+    if (attachment?.role === "creator") {
+      const participantId = message.participantId;
+      const recipient = sockets.find((candidate) => {
+        const candidateAttachment = candidate.deserializeAttachment();
+        return candidateAttachment?.role === "participant" &&
+          candidateAttachment.participantId === participantId;
+      });
+      if (!recipient) {
+        this.sendError(socket, "That participant is no longer connected.");
         return;
       }
-      await this.ctx.storage.put("offerSent", true);
-      await this.ctx.storage.put("offer", payload);
-      for (const recipient of this.ctx.getWebSockets("answerer")) {
-        recipient.send(payload);
-        await this.ctx.storage.delete("offer");
-      }
+      recipient.send(JSON.stringify({ type: "offer", sdp: message.sdp }));
       return;
     }
 
-    if (await this.ctx.storage.get("answerSent")) {
-      this.sendError(socket, "An answer was already sent for this room");
+    if (attachment?.role === "participant") {
+      const creator = sockets.find(
+        (candidate) => candidate.deserializeAttachment()?.role === "creator",
+      );
+      if (!creator) {
+        this.sendError(socket, "The room creator is no longer connected.");
+        return;
+      }
+      creator.send(JSON.stringify({
+        type: "answer",
+        participantId: attachment.participantId,
+        sdp: message.sdp,
+      }));
+    }
+  }
+
+  async webSocketClose(socket) {
+    const attachment = socket.deserializeAttachment();
+    if (attachment?.role === "creator") {
+      for (const participant of this.ctx.getWebSockets("participant")) {
+        participant.close(4001, "The room creator disconnected");
+      }
+      await this.ctx.storage.deleteAll();
       return;
     }
-    const offerers = this.ctx.getWebSockets("offerer");
-    if (!offerers.length) {
-      this.sendError(socket, "The room creator is no longer connected");
-      return;
-    }
-    await this.ctx.storage.put("answerSent", true);
-    for (const recipient of offerers) {
-      recipient.send(payload);
+
+    if (attachment?.role === "participant") {
+      await this.ctx.storage.transaction(async (transaction) => {
+        const participants = await transaction.get("participants") || {};
+        delete participants[attachment.participantId];
+        await transaction.put("participants", participants);
+      });
+      const creator = this.ctx.getWebSockets("creator")[0];
+      if (creator) {
+        creator.send(JSON.stringify({
+          type: "participant-left",
+          participantId: attachment.participantId,
+        }));
+      }
     }
   }
 
@@ -246,6 +401,15 @@ export class SignalingRoom extends DurableObject {
       socket.close(4000, "Room expired");
     }
     await this.ctx.storage.deleteAll();
+  }
+
+  rejectSocket(message) {
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+    this.ctx.acceptWebSocket(server);
+    server.send(JSON.stringify({ type: "error", message }));
+    server.close(1008, message);
+    return new Response(null, { status: 101, webSocket: client });
   }
 
   sendError(socket, message) {
