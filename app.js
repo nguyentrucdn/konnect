@@ -430,6 +430,10 @@ function updateRoomSize(count = roomParticipants.size + 1) {
   roomCount.textContent = text;
 }
 
+function updateHostConnectionStatus(message) {
+  setConnectionStatus(`${roomParticipants.size + 1}/${roomMaxUsers} people in the room. ${message}`);
+}
+
 function updateRoomAvailability() {
   const ready = roomMode
     ? getOpenRoomChannels().length > 0
@@ -542,7 +546,12 @@ function configureRoomDataChannel(channel, connection, participantId, participan
     updateRoomSize();
     updateRoomAvailability();
     chatInput.focus();
-    if (isRoomHost) broadcastRoomPresence();
+    if (isRoomHost) {
+      broadcastRoomPresence();
+      updateHostConnectionStatus(
+        `Connection to ${participantName} is ready. Keep sharing the invite for others to join.`,
+      );
+    }
   });
   channel.addEventListener("close", () => {
     if (isRoomHost) {
@@ -562,6 +571,13 @@ function configureRoomDataChannel(channel, connection, participantId, participan
   });
   channel.addEventListener("message", (event) => {
     handleRoomDataMessage(event, channel, participantName);
+  });
+  connection.addEventListener("connectionstatechange", () => {
+    if (isRoomHost && connection.connectionState === "failed") {
+      updateHostConnectionStatus(
+        `Connection to ${participantName} failed. Check the network and relay settings, then ask them to rejoin.`,
+      );
+    }
   });
   channel.addEventListener("error", () => showToast("A room data channel error occurred. Try reconnecting."));
 }
@@ -677,7 +693,9 @@ async function handleRoomSignaling(signaling, iceConfig) {
     if (message.type === "participant-joined") {
       roomParticipants.set(message.participantId, message.name);
       broadcastRoomPresence();
+      updateHostConnectionStatus(`Connecting with ${message.name}…`);
       void connectRoomParticipant(signaling, iceConfig, message).catch((error) => {
+        updateHostConnectionStatus(`Could not connect with ${message.name}: ${error.message}`);
         showToast(error.message);
       });
     } else {
@@ -723,7 +741,7 @@ async function connectRoomParticipant(signaling, iceConfig, participantInfo) {
       throw new Error("A participant sent an invalid connection answer.");
     }
     await connection.setRemoteDescription({ type: "answer", sdp: answer.sdp });
-    setConnectionStatus(`${roomParticipants.size + 1}/${roomMaxUsers} people in the room. You can keep sharing the invite.`);
+    updateHostConnectionStatus(`Establishing an encrypted connection with ${name}…`);
   } catch (error) {
     if (roomConnections.get(participantId) === participant) {
       roomConnections.delete(participantId);
