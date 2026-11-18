@@ -15,11 +15,13 @@ const joinForm = document.querySelector("#join-form");
 const joinButton = joinForm.querySelector('button[type="submit"]');
 const joinCode = document.querySelector("#join-code");
 const joinStatus = document.querySelector("#join-status");
+const cancelJoinButton = document.querySelector("#cancel-join-button");
 const answerPanel = document.querySelector("#answer-panel");
 const answerCode = document.querySelector("#answer-code");
 const setupError = document.querySelector("#setup-error");
 const connectionStatus = document.querySelector("#connection-status");
 const roomSize = document.querySelector("#room-size");
+const roomConnectionStatus = document.querySelector("#room-connection-status");
 const roomCount = document.querySelector("#room-count");
 const transferStatus = document.querySelector("#transfer-status");
 const transferList = document.querySelector("#transfer-list");
@@ -45,6 +47,7 @@ let lastScanTime = 0;
 let currentInviteUrl = "";
 let signalingSession;
 let isJoining = false;
+let joinCancelled = false;
 let roomMode = false;
 let isRoomHost = false;
 let localName = "";
@@ -52,12 +55,94 @@ let roomMaxUsers = 2;
 let roomConnections = new Map();
 let roomParticipants = new Map();
 let roomClientConnection;
+let currentRoomId;
+let roomHasConnected = false;
+let isReconnecting = false;
+let roomDisconnectTimer;
+const roomHeartbeatTimers = new WeakMap();
 const scanCanvas = document.createElement("canvas");
 const scanContext = scanCanvas.getContext("2d", { willReadFrequently: true });
 
 function showSetupError(message) {
   setupError.textContent = message;
   setupError.hidden = false;
+}
+
+function waitForRoomDataChannel(connection, participantId, creatorName) {
+  return new Promise((resolve, reject) => {
+    let channel;
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(Object.assign(
+        new Error("The encrypted room connection timed out."),
+        { retryable: true },
+      ));
+    }, 90000);
+
+    function cleanup() {
+      window.clearTimeout(timeout);
+      connection.removeEventListener("datachannel", onDataChannel);
+      connection.removeEventListener("connectionstatechange", onConnectionState);
+      channel?.removeEventListener("open", onOpen);
+      channel?.removeEventListener("close", onClose);
+    }
+
+    function onOpen() {
+      cleanup();
+      resolve();
+    }
+
+    function onClose() {
+      cleanup();
+      reject(Object.assign(
+        new Error("The room data connection closed during setup."),
+        { retryable: true },
+      ));
+    }
+
+    function onDataChannel(event) {
+      channel = event.channel;
+      configureRoomDataChannel(channel, connection, participantId, creatorName);
+      channel.addEventListener("open", onOpen);
+      channel.addEventListener("close", onClose);
+      if (channel.readyState === "open") onOpen();
+    }
+
+    function onConnectionState() {
+      if (connection.connectionState === "failed" || connection.connectionState === "closed") {
+        cleanup();
+        reject(Object.assign(
+          new Error("Could not establish an encrypted room connection."),
+          { retryable: true },
+        ));
+      }
+    }
+
+    connection.addEventListener("datachannel", onDataChannel);
+    connection.addEventListener("connectionstatechange", onConnectionState);
+  });
+}
+
+async function reconnectRoomClient(reason) {
+  if (!roomMode || isRoomHost || !roomHasConnected || isReconnecting || joinCancelled) return;
+  isReconnecting = true;
+  setRoomClientStatus(false, `${reason} Reconnecting…`);
+  window.clearTimeout(roomDisconnectTimer);
+
+  const previousSignaling = signalingSession;
+  const previousConnection = roomClientConnection;
+  dataChannel = undefined;
+  roomClientConnection = undefined;
+  closeSignaling(previousSignaling, "Reconnecting room connection");
+  previousConnection?.close();
+
+  try {
+    await joinSignalingRoom(currentRoomId, true);
+  } catch (error) {
+    isReconnecting = false;
+    setRoomClientStatus(false, `Could not reconnect: ${error.message}`);
+    showToast(error.message);
+  }
 }
 
 function showToast(message) {
@@ -164,17 +249,30 @@ function drawQr(canvas, value) {
 function waitForIceGathering(connection) {
   if (connection.iceGatheringState === "complete") return Promise.resolve();
   return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(() => {
-      connection.removeEventListener("icegatheringstatechange", onStateChange);
-      reject(new Error("ICE route discovery took longer than a minute. Check your connection or try another network, then create a new room."));
-    }, 60000);
-    function onStateChange() {
-      if (connection.iceGatheringState !== "complete") return;
+    function cleanup() {
       window.clearTimeout(timeout);
       connection.removeEventListener("icegatheringstatechange", onStateChange);
+      connection.removeEventListener("connectionstatechange", onConnectionState);
+    }
+    function onStateChange() {
+      if (connection.iceGatheringState !== "complete") return;
+      cleanup();
       resolve();
     }
+    function onConnectionState() {
+      if (!["failed", "closed"].includes(connection.connectionState)) return;
+      cleanup();
+      reject(new Error("The connection closed before ICE route discovery completed."));
+    }
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(Object.assign(
+        new Error("ICE route discovery took longer than a minute. Check your connection or try another network, then create a new room."),
+        { retryable: true },
+      ));
+    }, 60000);
     connection.addEventListener("icegatheringstatechange", onStateChange);
+    connection.addEventListener("connectionstatechange", onConnectionState);
   });
 }
 
@@ -229,7 +327,10 @@ async function getIceServers(roomId, role, participantId) {
       cache: "no-store",
     });
   } catch {
-    throw new Error("Could not reach the relay configuration service. Check your connection and try again.");
+    throw Object.assign(
+      new Error("Could not reach the relay configuration service. Check your connection and try again."),
+      { retryable: true },
+    );
   }
   let config;
   try {
@@ -238,7 +339,10 @@ async function getIceServers(roomId, role, participantId) {
     throw new Error("The signaling service returned an invalid relay configuration.");
   }
   if (!response.ok) {
-    throw new Error(config.error || "Could not obtain relay credentials. Please try again.");
+    throw Object.assign(
+      new Error(config.error || "Could not obtain relay credentials. Please try again."),
+      { retryable: config.retryable === true },
+    );
   }
   if (!Array.isArray(config.iceServers) || typeof config.relayAvailable !== "boolean") {
     throw new Error("The signaling service returned an invalid relay configuration.");
@@ -270,7 +374,10 @@ function connectSignaling(roomId, role, options = {}) {
     signalingSession = session;
     const timeout = window.setTimeout(() => {
       socket.close();
-      reject(new Error("Could not reach the signaling service. Check your connection and try again."));
+        reject(Object.assign(
+          new Error("Could not reach the signaling service. Check your connection and try again."),
+          { retryable: true },
+        ));
     }, 15000);
 
     socket.addEventListener("open", () => {
@@ -287,6 +394,7 @@ function connectSignaling(roomId, role, options = {}) {
       }
       if (message?.type === "error") {
         session.error = new Error(message.message || "The signaling service rejected this room.");
+        session.error.retryable = message.retryable === true;
         rejectSignalWaiters(session, session.error);
         return;
       }
@@ -307,12 +415,19 @@ function connectSignaling(roomId, role, options = {}) {
       session.closed = true;
       if (signalingSession === session) signalingSession = undefined;
       window.clearTimeout(timeout);
-      rejectSignalWaiters(session, new Error("The signaling connection closed before setup completed."));
+      rejectSignalWaiters(session, Object.assign(
+        new Error("The signaling connection closed before setup completed."),
+        { retryable: true },
+      ));
+      options.onClose?.();
     });
     socket.addEventListener("error", () => {
       if (socket.readyState !== WebSocket.OPEN) {
         window.clearTimeout(timeout);
-        reject(new Error("Could not connect to the signaling service."));
+        reject(Object.assign(
+          new Error("Could not connect to the signaling service."),
+          { retryable: true },
+        ));
       }
     });
   });
@@ -331,7 +446,10 @@ function waitForSignal(session, type, timeoutMs = 240000, predicate = () => true
     const waiter = { type, predicate, resolve, reject };
     waiter.timeout = window.setTimeout(() => {
       session.waiters = session.waiters.filter((item) => item !== waiter);
-      reject(new Error("Timed out waiting for the other browser. Create a new room and try again."));
+      reject(Object.assign(
+        new Error("Timed out waiting for the other browser. Create a new room and try again."),
+        { retryable: true },
+      ));
     }, timeoutMs);
     session.waiters.push(waiter);
   });
@@ -448,8 +566,24 @@ function updateRoomAvailability() {
       ? "Files are shared with everyone in the room."
       : "Files are sent only to your connected peer.";
   } else {
-    chatInput.placeholder = "Waiting for another person to connect…";
-    transferStatus.textContent = "Waiting for another person to connect before sharing files.";
+    chatInput.placeholder = isReconnecting ? "Reconnecting to the room…" : "Waiting for another person to connect…";
+    transferStatus.textContent = isReconnecting
+      ? "Reconnecting before sharing files…"
+      : "Waiting for another person to connect before sharing files.";
+  }
+}
+
+function setRoomClientStatus(connected, message) {
+  roomConnectionStatus.textContent = message;
+  roomConnectionStatus.classList.toggle("reconnecting", !connected);
+  if (!isRoomHost) {
+    fileInput.disabled = !connected;
+    dropZone.setAttribute("aria-disabled", String(!connected));
+    chatInput.disabled = !connected;
+    chatSendButton.disabled = !connected;
+    chatInput.placeholder = connected ? "Write a message…" : "Reconnecting to the room…";
+    if (!connected) transferStatus.textContent = "Reconnecting before sharing files…";
+    else transferStatus.textContent = "Files are shared with everyone in the room.";
   }
 }
 
@@ -503,6 +637,33 @@ function sendRoomBinary(data, exceptChannel) {
   }
 }
 
+function startRoomChannelHeartbeat(channel) {
+  let lastActivity = Date.now();
+  channel.addEventListener("message", () => {
+    lastActivity = Date.now();
+  });
+  const heartbeat = window.setInterval(() => {
+    if (channel.readyState !== "open") {
+      window.clearInterval(heartbeat);
+      return;
+    }
+    if (Date.now() - lastActivity > 30000) {
+      window.clearInterval(heartbeat);
+      if (isRoomHost) channel.close();
+      else void reconnectRoomClient("The room stopped responding.");
+      return;
+    }
+    try {
+      channel.send(JSON.stringify({ type: "heartbeat" }));
+    } catch {
+      window.clearInterval(heartbeat);
+      if (isRoomHost) channel.close();
+      else void reconnectRoomClient("The room stopped responding.");
+    }
+  }, 10000);
+  roomHeartbeatTimers.set(channel, heartbeat);
+}
+
 async function sendRoomDataToChannels(channels, data) {
   if (!channels.length) throw new Error("No other room members are connected.");
   for (const channel of channels) {
@@ -541,6 +702,7 @@ function configureRoomDataChannel(channel, connection, participantId, participan
       showToast("Could not verify an encrypted connection. No data was sent; try a supported browser.");
       return;
     }
+    startRoomChannelHeartbeat(channel);
     showView(connectedView);
     document.querySelector("#copy-room-invite-button").hidden = !isRoomHost;
     updateRoomSize();
@@ -551,9 +713,16 @@ function configureRoomDataChannel(channel, connection, participantId, participan
       updateHostConnectionStatus(
         `Connection to ${participantName} is ready. Keep sharing the invite for others to join.`,
       );
+    } else {
+      roomHasConnected = true;
+      isReconnecting = false;
+      window.clearTimeout(roomDisconnectTimer);
+      setRoomClientStatus(true, "Connected to the room creator.");
+      cancelJoinButton.hidden = true;
     }
   });
   channel.addEventListener("close", () => {
+    window.clearInterval(roomHeartbeatTimers.get(channel));
     if (isRoomHost) {
       const participant = roomConnections.get(participantId);
       if (participant?.channel === channel) {
@@ -565,11 +734,23 @@ function configureRoomDataChannel(channel, connection, participantId, participan
         if (roomConnections.size === 0) showView(offerView);
       }
     } else if (dataChannel === channel && roomMode) {
-      showToast("The room connection closed.");
-      disconnect();
+      void reconnectRoomClient("The room connection closed.");
     }
   });
   channel.addEventListener("message", (event) => {
+    if (typeof event.data === "string") {
+      let controlMessage;
+      try {
+        controlMessage = JSON.parse(event.data);
+      } catch {
+        controlMessage = undefined;
+      }
+      if (controlMessage?.type === "heartbeat") {
+        channel.send(JSON.stringify({ type: "heartbeat-ack" }));
+        return;
+      }
+      if (controlMessage?.type === "heartbeat-ack") return;
+    }
     handleRoomDataMessage(event, channel, participantName);
   });
   connection.addEventListener("connectionstatechange", () => {
@@ -577,6 +758,22 @@ function configureRoomDataChannel(channel, connection, participantId, participan
       updateHostConnectionStatus(
         `Connection to ${participantName} failed. Check the network and relay settings, then ask them to rejoin.`,
       );
+    } else if (!isRoomHost && roomClientConnection === connection && roomMode) {
+      if (connection.connectionState === "connected" && channel.readyState === "open") {
+        window.clearTimeout(roomDisconnectTimer);
+        isReconnecting = false;
+        setRoomClientStatus(true, "Connected to the room creator.");
+      } else if (connection.connectionState === "disconnected") {
+        setRoomClientStatus(false, "Connection interrupted. Trying to reconnect…");
+        window.clearTimeout(roomDisconnectTimer);
+        roomDisconnectTimer = window.setTimeout(() => {
+          if (connection.connectionState === "disconnected") {
+            void reconnectRoomClient("Connection to the room was interrupted.");
+          }
+        }, 5000);
+      } else if (["failed", "closed"].includes(connection.connectionState)) {
+        void reconnectRoomClient("Connection to the room was lost.");
+      }
     }
   });
   channel.addEventListener("error", () => showToast("A room data channel error occurred. Try reconnecting."));
@@ -639,8 +836,14 @@ function resetPeerConnection() {
   incomingFiles.clear();
   roomMode = false;
   isRoomHost = false;
+  roomHasConnected = false;
+  isReconnecting = false;
+  currentRoomId = undefined;
+  window.clearTimeout(roomDisconnectTimer);
   roomSize.textContent = "";
   roomCount.textContent = "1/2 people in the room";
+  roomConnectionStatus.textContent = "";
+  roomConnectionStatus.classList.remove("reconnecting");
   updateRoomAvailability();
 }
 
@@ -759,7 +962,9 @@ async function connectRoomParticipant(signaling, iceConfig, participantInfo) {
 async function joinRoom(code) {
   if (isJoining || roomMode) return;
   isJoining = true;
+  joinCancelled = false;
   joinButton.disabled = true;
+  cancelJoinButton.hidden = true;
   setupError.hidden = true;
   setJoinStatus("");
   try {
@@ -786,44 +991,112 @@ async function joinRoom(code) {
   } catch (error) {
     resetPeerConnection();
     answerPanel.hidden = true;
-    setJoinStatus("");
-    showSetupError(error.message);
+    if (joinCancelled) {
+      setJoinStatus("Room connection cancelled.");
+    } else {
+      setJoinStatus("");
+      showSetupError(error.message);
+    }
   } finally {
     isJoining = false;
     joinButton.disabled = false;
+    cancelJoinButton.hidden = true;
+    if (joinCancelled) setJoinStatus("Room connection cancelled.");
   }
 }
 
 async function joinSignalingRoom(roomId) {
-  const participantId = randomFileId();
-  roomMode = true;
-  isRoomHost = false;
-  roomParticipants = new Map();
-  roomConnections = new Map();
-  setJoinStatus("Connecting to the room…");
-  const signaling = await connectSignaling(roomId, "participant", {
-    name: localName,
-    participantId,
-  });
-  const ready = await waitForSignal(signaling, "room-ready");
-  roomMaxUsers = ready.maxUsers;
-  setJoinStatus("Waiting for the room creator…");
-  const iceConfig = await getIceServers(roomId, "participant", participantId);
-  const offer = await waitForSignal(signaling, "offer");
-  if (typeof offer.sdp !== "string" || !offer.sdp.startsWith("v=0")) {
-    throw new Error("The room sent an invalid connection offer.");
+  const reconnecting = isReconnecting;
+  if (!reconnecting) {
+    currentRoomId = roomId;
+    roomHasConnected = false;
+    roomMode = true;
+    isRoomHost = false;
+    roomParticipants = new Map();
+    roomConnections = new Map();
   }
-  const connection = createRoomPeerConnection(iceConfig.iceServers, iceConfig.relayAvailable);
-  roomClientConnection = connection;
-  connection.addEventListener("datachannel", (event) => {
-    configureRoomDataChannel(event.channel, connection, participantId, ready.creatorName);
-  });
-  await connection.setRemoteDescription({ type: "offer", sdp: offer.sdp });
-  const answer = await connection.createAnswer();
-  await connection.setLocalDescription(answer);
-  await waitForIceGathering(connection);
-  sendSignal(signaling, { type: "answer", sdp: connection.localDescription.sdp });
-  setJoinStatus("Connected to the room creator. Establishing the encrypted connection…");
+  cancelJoinButton.hidden = reconnecting;
+  let attempt = 0;
+  while (roomMode && !joinCancelled) {
+    let signaling;
+    let connection;
+    try {
+      const participantId = randomFileId();
+      const progress = attempt === 0
+        ? "Connecting to the room…"
+        : `Retrying room connection (${attempt})…`;
+      if (reconnecting) setRoomClientStatus(false, progress);
+      else setJoinStatus(progress);
+      signaling = await connectSignaling(roomId, "participant", {
+        name: localName,
+        participantId,
+        onClose: () => {
+          if (roomHasConnected && !isReconnecting && roomMode && !joinCancelled) {
+            void reconnectRoomClient("Room signaling disconnected.");
+          }
+        },
+      });
+      const ready = await waitForSignal(signaling, "room-ready");
+      roomMaxUsers = ready.maxUsers;
+      if (reconnecting) setRoomClientStatus(false, "Waiting for the room creator…");
+      else setJoinStatus("Waiting for the room creator…");
+      const iceConfig = await getIceServers(roomId, "participant", participantId);
+      const offer = await waitForSignal(signaling, "offer");
+      if (typeof offer.sdp !== "string" || !offer.sdp.startsWith("v=0")) {
+        throw new Error("The room sent an invalid connection offer.");
+      }
+      connection = createRoomPeerConnection(iceConfig.iceServers, iceConfig.relayAvailable);
+      roomClientConnection = connection;
+      const connectionReady = waitForRoomDataChannel(connection, participantId, ready.creatorName);
+      connectionReady.catch(() => {});
+      await connection.setRemoteDescription({ type: "offer", sdp: offer.sdp });
+      const answer = await connection.createAnswer();
+      await connection.setLocalDescription(answer);
+      await waitForIceGathering(connection);
+      sendSignal(signaling, { type: "answer", sdp: connection.localDescription.sdp });
+      if (!reconnecting) {
+        setJoinStatus("Connected to the room creator. Establishing the encrypted connection…");
+      }
+      await connectionReady;
+      return;
+    } catch (error) {
+      closeSignaling(signaling, "Retrying room connection");
+      if (roomClientConnection === connection) {
+        roomClientConnection = undefined;
+        dataChannel = undefined;
+        connection.close();
+      }
+      if (joinCancelled || !roomMode) return;
+      if (!isRetryableRoomJoinError(error) && !reconnecting) throw error;
+      attempt += 1;
+      const retryDelay = Math.min(1000 * (2 ** (attempt - 1)), 15000);
+      const retrySeconds = Math.ceil(retryDelay / 1000);
+      const retryStatus = `Room isn’t available yet (${error.message}). Retrying in ${retrySeconds} second${retrySeconds === 1 ? "" : "s"}…`;
+      if (reconnecting) setRoomClientStatus(false, retryStatus);
+      else setJoinStatus(retryStatus);
+      await new Promise((resolve) => window.setTimeout(resolve, retryDelay));
+    }
+  }
+}
+
+function isRetryableRoomJoinError(error) {
+  return error?.retryable === true ||
+    /Could not reach the signaling service|Could not connect to the signaling service|signaling connection closed before setup completed/i
+      .test(error?.message || "");
+}
+
+function cancelRoomJoin() {
+  if (!isJoining && !isReconnecting) return;
+  joinCancelled = true;
+  closeSignaling(signalingSession, "Room connection cancelled");
+  if (isJoining) {
+    const connection = roomClientConnection;
+    resetPeerConnection();
+    connection?.close();
+    setJoinStatus("Room connection cancelled.");
+    return;
+  }
+  disconnect();
 }
 
 function randomFileId() {
@@ -1185,6 +1458,8 @@ joinForm.addEventListener("submit", (event) => {
   event.preventDefault();
   void joinRoom(joinCode.value);
 });
+
+cancelJoinButton.addEventListener("click", cancelRoomJoin);
 
 document.querySelector("#back-button").addEventListener("click", disconnect);
 document.querySelector("#disconnect-button").addEventListener("click", disconnect);

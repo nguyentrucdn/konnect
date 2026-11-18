@@ -321,6 +321,10 @@ textarea[readonly] {
   margin-top: 0;
 }
 
+#cancel-join-button {
+  margin-top: 10px;
+}
+
 .notice {
   margin: 18px 0 0;
   padding: 12px 14px;
@@ -436,6 +440,17 @@ textarea[readonly] {
   color: var(--muted);
   font-size: 12px;
   text-align: right;
+}
+
+.room-connection-status {
+  max-width: 190px;
+  margin: 0;
+  color: var(--green);
+  font-size: 12px;
+}
+
+.room-connection-status.reconnecting {
+  color: #9c5e17;
 }
 
 .room-count {

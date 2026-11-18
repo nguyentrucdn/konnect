@@ -93,8 +93,10 @@ export default {
         const status = authorized.status;
         const error = status === 409
           ? "This room is full."
-          : "The room creator is not connected.";
-        return jsonResponse({ error }, status, origin);
+          : status === 503
+            ? "The room creator is starting or reconnecting."
+            : "This participant is not connected to the room.";
+        return jsonResponse({ error, retryable: status === 503 }, status, origin);
       }
 
       if (!env.METERED_TURN_APP || !env.METERED_TURN_API_KEY) {
@@ -110,7 +112,11 @@ export default {
       );
       const rateLimit = await limiter.fetch(new Request("https://internal/_rate-limit"));
       if (!rateLimit.ok) {
-        return jsonResponse({ error: "Too many relay requests. Try again shortly." }, 429, origin);
+        return jsonResponse(
+          { error: "Too many relay requests. Try again shortly.", retryable: true },
+          429,
+          origin,
+        );
       }
 
       let turnResponse;
@@ -124,11 +130,19 @@ export default {
         );
       } catch (error) {
         console.error("Could not request Metered TURN credentials", error);
-        return jsonResponse({ error: "Relay credentials are temporarily unavailable." }, 502, origin);
+        return jsonResponse(
+          { error: "Relay credentials are temporarily unavailable.", retryable: true },
+          502,
+          origin,
+        );
       }
       if (!turnResponse.ok) {
         console.error("Metered TURN credential request failed", turnResponse.status);
-        return jsonResponse({ error: "Relay credentials are temporarily unavailable." }, 502, origin);
+        return jsonResponse(
+          { error: "Relay credentials are temporarily unavailable.", retryable: true },
+          502,
+          origin,
+        );
       }
 
       let iceServers;
@@ -136,11 +150,19 @@ export default {
         iceServers = await turnResponse.json();
       } catch {
         console.error("Metered TURN returned invalid JSON");
-        return jsonResponse({ error: "Relay credentials are temporarily unavailable." }, 502, origin);
+        return jsonResponse(
+          { error: "Relay credentials are temporarily unavailable.", retryable: true },
+          502,
+          origin,
+        );
       }
       if (!Array.isArray(iceServers) || iceServers.length === 0) {
         console.error("Metered TURN returned no ICE servers");
-        return jsonResponse({ error: "Relay credentials are temporarily unavailable." }, 502, origin);
+        return jsonResponse(
+          { error: "Relay credentials are temporarily unavailable.", retryable: true },
+          502,
+          origin,
+        );
       }
 
       return jsonResponse({ iceServers, relayAvailable: true }, 200, origin);
@@ -196,7 +218,7 @@ export class SignalingRoom extends DurableObject {
       const creatorConnected = sockets.some(
         (socket) => socket.deserializeAttachment()?.role === "creator",
       );
-      if (!creatorConnected) return new Response(null, { status: 403 });
+      if (!creatorConnected) return new Response(null, { status: 503 });
       if (role === "creator") {
         return new Response(null, {
           status: sockets.some((socket) => socket.deserializeAttachment()?.role === "creator") ? 204 : 403,
@@ -244,10 +266,14 @@ export class SignalingRoom extends DurableObject {
       });
       if (!created) return this.rejectSocket("This room has already been created.");
     } else {
-      if (!creator) return this.rejectSocket("The room creator is not connected.");
+      if (!creator) {
+        return this.rejectSocket("The room creator is starting or reconnecting.", true);
+      }
       const reservation = await this.ctx.storage.transaction(async (transaction) => {
         const roomConfig = await transaction.get("roomConfig");
-        if (!roomConfig) return { error: "The room creator is not connected." };
+        if (!roomConfig) {
+          return { error: "The room creator is starting or reconnecting.", retryable: true };
+        }
         const participants = await transaction.get("participants") || {};
         if (Object.hasOwn(participants, participantId)) {
           return { error: "You are already connected to this room." };
@@ -259,7 +285,7 @@ export class SignalingRoom extends DurableObject {
         await transaction.put("participants", participants);
         return { config: roomConfig };
       });
-      if (reservation.error) return this.rejectSocket(reservation.error);
+      if (reservation.error) return this.rejectSocket(reservation.error, reservation.retryable);
       config = reservation.config;
       reservedParticipant = true;
     }
@@ -403,11 +429,11 @@ export class SignalingRoom extends DurableObject {
     await this.ctx.storage.deleteAll();
   }
 
-  rejectSocket(message) {
+  rejectSocket(message, retryable = false) {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.ctx.acceptWebSocket(server);
-    server.send(JSON.stringify({ type: "error", message }));
+    server.send(JSON.stringify({ type: "error", message, retryable }));
     server.close(1008, message);
     return new Response(null, { status: 101, webSocket: client });
   }

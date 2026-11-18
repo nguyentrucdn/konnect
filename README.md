@@ -31,7 +31,7 @@ The API key is stored as a Worker secret and never included in the static site. 
 
 1. Everyone chooses a display name. The creator selects a maximum room size (2 by default), creates the room, and shares the QR code or invite link.
 2. Participants scan the QR with their iPhone Camera (or another QR reader), choose a name, and join. The creator's browser connects each participant and relays room messages and files.
-3. Once the encrypted connections are established, people in the room can chat or send files. The creator must remain connected for the room to work.
+3. Once the encrypted connections are established, people in the room can chat or send files. Participants automatically retry the connection if the creator is still starting or their connection drops; chat and file controls stay disabled until they reconnect. The creator must remain connected for the room to work.
 
 The invite link contains a random room ID in its URL fragment; the SDP offer is exchanged through the signaling service and is not placed in the URL. Fragments are not sent to the website server, and Konnect removes the fragment from the address bar after reading it. The app uses STUN for direct route discovery and Metered Open Relay as a fallback when configured. TURN traffic remains DTLS-encrypted.
 
