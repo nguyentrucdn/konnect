@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "konnect-signal",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-18",
+  "workers_dev": true,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SIGNAL_ROOMS",
+        "class_name": "SignalingRoom"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SignalingRoom"]
+    }
+  ],
+  "vars": {
+    "ALLOWED_ORIGINS": "https://nguyentrucdn.github.io,http://localhost:8000"
+  }
+}

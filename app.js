@@ -11,6 +11,7 @@ const connectedView = document.querySelector("#connected-view");
 const createButton = document.querySelector("#create-button");
 const joinForm = document.querySelector("#join-form");
 const joinCode = document.querySelector("#join-code");
+const joinStatus = document.querySelector("#join-status");
 const answerPanel = document.querySelector("#answer-panel");
 const answerCode = document.querySelector("#answer-code");
 const setupError = document.querySelector("#setup-error");
@@ -33,6 +34,7 @@ let scanFrameId;
 let toastTimeout;
 let lastScanTime = 0;
 let currentInviteUrl = "";
+let signalingSession;
 const scanCanvas = document.createElement("canvas");
 const scanContext = scanCanvas.getContext("2d", { willReadFrequently: true });
 
@@ -68,23 +70,29 @@ function encodeDescription(description) {
   return `KONNECT1.${btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")}`;
 }
 
-function makeInviteUrl(code) {
+function makeInviteUrl(roomId) {
   const inviteUrl = new URL(window.location.href);
-  inviteUrl.hash = new URLSearchParams({ join: code }).toString();
+  inviteUrl.hash = new URLSearchParams({ room: roomId }).toString();
   return inviteUrl.toString();
 }
 
-function extractInviteCode(value) {
+function parseInvite(value) {
   const input = value.trim();
-  if (!/^https?:\/\//i.test(input)) return input;
-  const inviteUrl = new URL(input);
-  const currentUrl = new URL(window.location.href);
-  if (inviteUrl.origin !== currentUrl.origin || inviteUrl.pathname !== currentUrl.pathname) {
-    throw new Error("That invite link isn’t for this Konnect page.");
+  if (/^https?:\/\//i.test(input)) {
+    const inviteUrl = new URL(input);
+    const currentUrl = new URL(window.location.href);
+    if (inviteUrl.origin !== currentUrl.origin || inviteUrl.pathname !== currentUrl.pathname) {
+      throw new Error("That invite link isn’t for this Konnect page.");
+    }
+    const params = new URLSearchParams(inviteUrl.hash.slice(1));
+    const roomId = params.get("room");
+    const code = params.get("join");
+    if (roomId && /^[a-f0-9]{48}$/.test(roomId)) return { roomId };
+    if (code) return { code };
+    throw new Error("That invite link doesn’t contain a room code.");
   }
-  const code = new URLSearchParams(inviteUrl.hash.slice(1)).get("join");
-  if (!code) throw new Error("That invite link doesn’t contain a room code.");
-  return code;
+  if (/^[a-f0-9]{48}$/.test(input)) return { roomId: input };
+  return { code: input };
 }
 
 function decodeDescription(code) {
@@ -157,6 +165,131 @@ function setConnectionStatus(message) {
   connectionStatus.textContent = message;
 }
 
+function setJoinStatus(message) {
+  joinStatus.textContent = message;
+  joinStatus.hidden = !message;
+}
+
+function getSignalUrl(roomId, role) {
+  const configuredUrl = window.KONNECT_SIGNAL_URL;
+  if (!configuredUrl) {
+    throw new Error("The signaling service isn’t configured yet. Please try again later.");
+  }
+  const url = new URL(configuredUrl);
+  if (url.protocol !== "https:") {
+    throw new Error("The signaling service must use HTTPS.");
+  }
+  url.protocol = "wss:";
+  url.pathname = `/room/${roomId}`;
+  url.search = new URLSearchParams({ role }).toString();
+  url.hash = "";
+  return url.toString();
+}
+
+function connectSignaling(roomId, role) {
+  return new Promise((resolve, reject) => {
+    let url;
+    try {
+      url = getSignalUrl(roomId, role);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+
+    const socket = new WebSocket(url);
+    const session = { socket, messages: [], waiters: [], closed: false, error: undefined };
+    signalingSession = session;
+    const timeout = window.setTimeout(() => {
+      socket.close();
+      reject(new Error("Could not reach the signaling service. Check your connection and try again."));
+    }, 15000);
+
+    socket.addEventListener("open", () => {
+      window.clearTimeout(timeout);
+      resolve(session);
+    }, { once: true });
+    socket.addEventListener("message", (event) => {
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        closeSignaling(session, "Invalid signaling message");
+        return;
+      }
+      if (message?.type === "error") {
+        session.error = new Error(message.message || "The signaling service rejected this room.");
+        rejectSignalWaiters(session, session.error);
+        return;
+      }
+      const waiterIndex = session.waiters.findIndex((waiter) => waiter.type === message?.type);
+      if (waiterIndex !== -1) {
+        const [waiter] = session.waiters.splice(waiterIndex, 1);
+        window.clearTimeout(waiter.timeout);
+        waiter.resolve(message);
+      } else {
+        session.messages.push(message);
+      }
+    });
+    socket.addEventListener("close", () => {
+      session.closed = true;
+      if (signalingSession === session) signalingSession = undefined;
+      window.clearTimeout(timeout);
+      rejectSignalWaiters(session, new Error("The signaling connection closed before setup completed."));
+    });
+    socket.addEventListener("error", () => {
+      if (socket.readyState !== WebSocket.OPEN) {
+        window.clearTimeout(timeout);
+        reject(new Error("Could not connect to the signaling service."));
+      }
+    });
+  });
+}
+
+function waitForSignal(session, type, timeoutMs = 240000) {
+  const queuedIndex = session.messages.findIndex((message) => message?.type === type);
+  if (queuedIndex !== -1) return Promise.resolve(session.messages.splice(queuedIndex, 1)[0]);
+  if (session.error) return Promise.reject(session.error);
+  if (session.closed || session.socket.readyState === WebSocket.CLOSED) {
+    return Promise.reject(new Error("The signaling connection closed before setup completed."));
+  }
+  return new Promise((resolve, reject) => {
+    const waiter = { type, resolve, reject };
+    waiter.timeout = window.setTimeout(() => {
+      session.waiters = session.waiters.filter((item) => item !== waiter);
+      reject(new Error("Timed out waiting for the other browser. Create a new room and try again."));
+    }, timeoutMs);
+    session.waiters.push(waiter);
+  });
+}
+
+function rejectSignalWaiters(session, error) {
+  for (const waiter of session.waiters.splice(0)) {
+    window.clearTimeout(waiter.timeout);
+    waiter.reject(error);
+  }
+}
+
+function closeSignaling(session, reason = "Setup complete") {
+  if (!session || session.closed) return;
+  session.closed = true;
+  rejectSignalWaiters(session, new Error(reason));
+  if (session.socket.readyState < WebSocket.CLOSING) session.socket.close(1000, reason);
+  if (signalingSession === session) signalingSession = undefined;
+}
+
+function sendSignal(session, message) {
+  if (session.closed || session.socket.readyState !== WebSocket.OPEN) {
+    throw new Error("The signaling connection is no longer available.");
+  }
+  session.socket.send(JSON.stringify(message));
+}
+
+function newRoomId() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(24)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
 function configureDataChannel(channel) {
   dataChannel = channel;
   channel.binaryType = "arraybuffer";
@@ -197,6 +330,7 @@ function createPeerConnection() {
 }
 
 function resetPeerConnection() {
+  closeSignaling(signalingSession);
   if (dataChannel && dataChannel.readyState !== "closed") dataChannel.close();
   if (peerConnection) peerConnection.close();
   dataChannel = undefined;
@@ -208,6 +342,8 @@ async function createRoom() {
   setupError.hidden = true;
   createButton.disabled = true;
   try {
+    const roomId = newRoomId();
+    const signaling = await connectSignaling(roomId, "offerer");
     const connection = createPeerConnection();
     configureDataChannel(connection.createDataChannel("konnect", { ordered: true }));
     const offer = await connection.createOffer();
@@ -215,11 +351,22 @@ async function createRoom() {
     setConnectionStatus("Preparing a direct connection…");
     showView(offerView);
     await waitForIceGathering(connection);
-    const code = encodeDescription(connection.localDescription);
-    currentInviteUrl = makeInviteUrl(code);
-    document.querySelector("#offer-code").value = code;
+    sendSignal(signaling, { type: "offer", sdp: connection.localDescription.sdp });
+    currentInviteUrl = makeInviteUrl(roomId);
+    document.querySelector("#offer-code").value = roomId;
     drawQr(document.querySelector("#offer-qr"), currentInviteUrl);
     setConnectionStatus("Waiting for the other person to connect…");
+    void waitForSignal(signaling, "answer").then(async (answer) => {
+      if (!peerConnection || peerConnection !== connection) return;
+      await connection.setRemoteDescription({ type: "answer", sdp: answer.sdp });
+      setConnectionStatus("Connecting directly…");
+      closeSignaling(signaling);
+    }).catch((error) => {
+      if (peerConnection === connection) {
+        setConnectionStatus(error.message);
+        showToast(error.message);
+      }
+    });
   } catch (error) {
     resetPeerConnection();
     showView(setupView);
@@ -231,8 +378,14 @@ async function createRoom() {
 
 async function joinRoom(code) {
   setupError.hidden = true;
+  setJoinStatus("");
   try {
-    const offer = decodeDescription(extractInviteCode(code));
+    const invite = parseInvite(code);
+    if (invite.roomId) {
+      await joinSignalingRoom(invite.roomId);
+      return;
+    }
+    const offer = decodeDescription(invite.code);
     if (offer.type !== "offer") throw new Error("That code is a reply. Paste a room code from the person who created it.");
     const connection = createPeerConnection();
     connection.addEventListener("datachannel", (event) => configureDataChannel(event.channel));
@@ -253,19 +406,23 @@ async function joinRoom(code) {
   }
 }
 
-async function completeConnection(code) {
-  setupError.hidden = true;
-  try {
-    const answer = decodeDescription(code);
-    if (answer.type !== "answer") throw new Error("That code is a room code. Paste the reply code from the person who joined.");
-    if (!peerConnection || peerConnection.signalingState !== "have-local-offer") {
-      throw new Error("Create a room first, then enter the reply code.");
-    }
-    await peerConnection.setRemoteDescription(answer);
-    setConnectionStatus("Connecting directly…");
-  } catch (error) {
-    showToast(error.message);
+async function joinSignalingRoom(roomId) {
+  setJoinStatus("Connecting to the signaling service…");
+  const signaling = await connectSignaling(roomId, "answerer");
+  setJoinStatus("Waiting for the room offer…");
+  const offer = await waitForSignal(signaling, "offer");
+  if (typeof offer.sdp !== "string" || !offer.sdp.startsWith("v=0")) {
+    throw new Error("The room sent an invalid connection offer.");
   }
+  const connection = createPeerConnection();
+  connection.addEventListener("datachannel", (event) => configureDataChannel(event.channel));
+  await connection.setRemoteDescription({ type: "offer", sdp: offer.sdp });
+  const answer = await connection.createAnswer();
+  await connection.setLocalDescription(answer);
+  await waitForIceGathering(connection);
+  sendSignal(signaling, { type: "answer", sdp: connection.localDescription.sdp });
+  setJoinStatus("Reply sent. Establishing the encrypted direct connection…");
+  closeSignaling(signaling);
 }
 
 function randomFileId() {
@@ -511,7 +668,6 @@ async function startScanner(target) {
           target.dispatchEvent(new Event("input", { bubbles: true }));
           if (target === joinCode) await joinRoom(target.value);
           else if (target === answerCode) showToast("Reply code scanned. Ask the room creator to scan it or paste it into their room.");
-          else await completeConnection(target.value);
           return;
         }
       }
@@ -532,8 +688,8 @@ function disconnect() {
   answerPanel.hidden = true;
   joinCode.value = "";
   answerCode.value = "";
-  document.querySelector("#remote-answer").value = "";
   setupError.hidden = true;
+  setJoinStatus("");
   showView(setupView);
 }
 
@@ -542,11 +698,6 @@ createButton.addEventListener("click", createRoom);
 joinForm.addEventListener("submit", (event) => {
   event.preventDefault();
   void joinRoom(joinCode.value);
-});
-
-document.querySelector("#answer-form").addEventListener("submit", (event) => {
-  event.preventDefault();
-  void completeConnection(document.querySelector("#remote-answer").value);
 });
 
 document.querySelector("#back-button").addEventListener("click", disconnect);
@@ -568,9 +719,6 @@ document.querySelector("#copy-answer-button").addEventListener("click", () => {
 });
 
 document.querySelector("#scan-join-button").addEventListener("click", () => void startScanner(joinCode));
-document.querySelector("#scan-remote-answer-button").addEventListener("click", () =>
-  void startScanner(document.querySelector("#remote-answer")),
-);
 document.querySelector("#close-scanner-button").addEventListener("click", () => scannerDialog.close());
 scannerDialog.addEventListener("close", stopScanner);
 
@@ -605,9 +753,11 @@ window.addEventListener("beforeunload", () => {
   resetPeerConnection();
 });
 
-const inviteCode = new URLSearchParams(window.location.hash.slice(1)).get("join");
-if (inviteCode) {
+const initialInvite = new URLSearchParams(window.location.hash.slice(1));
+const initialRoomId = initialInvite.get("room");
+const initialInviteCode = initialInvite.get("join");
+if (initialRoomId || initialInviteCode) {
   window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-  joinCode.value = inviteCode;
-  void joinRoom(inviteCode);
+  joinCode.value = initialRoomId || initialInviteCode;
+  void joinRoom(joinCode.value);
 }

@@ -24,6 +24,19 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+      - name: Deploy signaling service
+        id: signal
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: signal
+          wranglerVersion: "4"
+      - name: Configure signaling endpoint
+        env:
+          SIGNAL_SERVER_URL: ${{ steps.signal.outputs.deployment-url }}
+        run: |
+          node -e 'const fs = require("node:fs"); const url = new URL(process.env.SIGNAL_SERVER_URL); if (url.protocol !== "https:") throw new Error("Cloudflare did not return an HTTPS Worker URL"); fs.writeFileSync("signal-config.js", `window.KONNECT_SIGNAL_URL = ${JSON.stringify(url.toString())};\n`);'
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
       - name: Upload static site

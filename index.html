@@ -4,12 +4,13 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#f6f7f4">
-    <meta name="description" content="Share files and chat directly with another browser. No account or app server required.">
+    <meta name="description" content="Share files and chat directly with another browser. No account or file storage required.">
     <title>Konnect — private peer-to-peer sharing</title>
     <link rel="stylesheet" href="styles.css">
     <script defer src="vendor/qrcode-generator.js"></script>
     <script defer src="vendor/qrcode-utf8.js"></script>
     <script defer src="vendor/jsQR.js"></script>
+    <script defer src="signal-config.js"></script>
     <script defer src="app.js"></script>
   </head>
   <body>
@@ -25,7 +26,7 @@
       <section class="intro">
         <p class="eyebrow">A direct connection between browsers</p>
         <h1>Share things.<br><span>Not your data.</span></h1>
-        <p class="intro-copy">Send files and messages directly to someone else. Connect by scanning a QR code or sharing a short code — no sign-up, app server, or file storage.</p>
+        <p class="intro-copy">Send files and messages directly to someone else. Connect by scanning a QR code or sharing a short code — no sign-up, file relay, or file storage.</p>
       </section>
 
       <section id="setup-view" class="view">
@@ -50,11 +51,12 @@
                 <button class="button button-primary" type="submit">Join room <span aria-hidden="true">→</span></button>
               </div>
             </form>
+            <p id="join-status" class="hint" role="status" hidden></p>
             <div id="answer-panel" class="answer-panel" hidden>
               <div class="rule"></div>
               <p class="eyebrow">One last step</p>
-              <h3>Send your reply code</h3>
-              <p>Share this code back with the person who created the room.</p>
+              <h3>Reply to a manual invite</h3>
+              <p>Copy this reply code and send it back to the person who shared the older room code.</p>
               <div class="qr-wrap"><canvas id="answer-qr" width="240" height="240"></canvas></div>
               <label class="sr-only" for="answer-code">Your reply code</label>
               <textarea id="answer-code" rows="3" readonly spellcheck="false"></textarea>
@@ -73,7 +75,7 @@
         <button id="back-button" class="back-button" type="button">← Start over</button>
         <p class="eyebrow">Room created</p>
         <h2>Share this code</h2>
-        <p>Ask the other person to scan with their iPhone Camera or paste the code into “Join a room”. The invite opens this page and prepares their reply.</p>
+        <p>Ask the other person to scan with their iPhone Camera. The invite opens this page and exchanges connection details automatically.</p>
         <div class="qr-wrap"><canvas id="offer-qr" width="240" height="240"></canvas></div>
         <label class="sr-only" for="offer-code">Your room code</label>
         <textarea id="offer-code" rows="3" readonly spellcheck="false"></textarea>
@@ -82,16 +84,8 @@
           <button id="copy-offer-button" class="button button-secondary" type="button">Copy code</button>
         </div>
         <div class="rule"></div>
-        <p class="eyebrow">Waiting for their reply</p>
-        <p>When they send back their reply code, paste it here.</p>
-        <form id="answer-form">
-          <label class="sr-only" for="remote-answer">Paste their reply code</label>
-          <textarea id="remote-answer" rows="3" placeholder="Paste their reply code here" spellcheck="false" autocomplete="off"></textarea>
-          <div class="form-actions">
-            <button id="scan-remote-answer-button" class="button button-secondary" type="button">Scan QR</button>
-            <button class="button button-primary" type="submit">Connect <span aria-hidden="true">→</span></button>
-          </div>
-        </form>
+        <p class="eyebrow">Waiting for the other person</p>
+        <p>The signaling service exchanges connection details only. Files and chat stay direct between browsers.</p>
         <p id="connection-status" class="hint" role="status">Preparing a direct connection…</p>
       </section>
 
@@ -160,7 +154,7 @@
 
     <footer class="footer">
       <span>Made for sharing, not storing.</span>
-      <span>WebRTC DTLS encryption · No data relay or file server</span>
+      <span>WebRTC DTLS encryption · No file relay or storage</span>
     </footer>
   </body>
 </html>
