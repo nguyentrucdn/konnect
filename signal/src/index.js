@@ -21,6 +21,20 @@ function validSdp(sdp) {
     new TextEncoder().encode(sdp).byteLength <= MAX_SIGNAL_BYTES;
 }
 
+function validIceCandidate(candidate) {
+  if (candidate === null) return true;
+  return candidate !== null &&
+    typeof candidate === "object" &&
+    typeof candidate.candidate === "string" &&
+    candidate.candidate.length <= 4096 &&
+    (candidate.sdpMid == null ||
+      (typeof candidate.sdpMid === "string" && candidate.sdpMid.length <= 256)) &&
+    (candidate.sdpMLineIndex == null ||
+      (Number.isInteger(candidate.sdpMLineIndex) && candidate.sdpMLineIndex >= 0)) &&
+    (candidate.usernameFragment == null ||
+      (typeof candidate.usernameFragment === "string" && candidate.usernameFragment.length <= 256));
+}
+
 function jsonResponse(body, status, origin) {
   return new Response(status === 204 ? null : JSON.stringify(body), {
     status,
@@ -358,10 +372,16 @@ export class SignalingRoom extends DurableObject {
       return;
     }
 
-    if (!validSdp(message?.sdp) ||
-        (attachment?.role === "creator" && message.type !== "offer") ||
-        (attachment?.role === "participant" && message.type !== "answer")) {
-      this.sendError(socket, "Invalid signaling description");
+    const validDescription = message?.type === "offer" || message?.type === "answer"
+      ? validSdp(message.sdp)
+      : message?.type === "candidate" && validIceCandidate(message.candidate);
+    if (
+      !/^[a-f0-9]{32}$/.test(message?.participantId || "") ||
+      !validDescription ||
+      (attachment?.role === "creator" && !["offer", "candidate"].includes(message.type)) ||
+      (attachment?.role === "participant" && !["answer", "candidate"].includes(message.type))
+    ) {
+      this.sendError(socket, "Invalid signaling message");
       return;
     }
 
@@ -372,11 +392,12 @@ export class SignalingRoom extends DurableObject {
         return candidateAttachment?.role === "participant" &&
           candidateAttachment.participantId === participantId;
       });
-      if (!recipient) {
-        this.sendError(socket, "That participant is no longer connected.");
-        return;
-      }
-      recipient.send(JSON.stringify({ type: "offer", sdp: message.sdp }));
+      if (!recipient) return;
+      recipient.send(JSON.stringify({
+        type: message.type,
+        participantId,
+        ...(message.type === "offer" ? { sdp: message.sdp } : { candidate: message.candidate }),
+      }));
       return;
     }
 
@@ -389,9 +410,9 @@ export class SignalingRoom extends DurableObject {
         return;
       }
       creator.send(JSON.stringify({
-        type: "answer",
+        type: message.type,
         participantId: attachment.participantId,
-        sdp: message.sdp,
+        ...(message.type === "answer" ? { sdp: message.sdp } : { candidate: message.candidate }),
       }));
     }
   }

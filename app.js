@@ -368,16 +368,17 @@ function connectSignaling(roomId, role, options = {}) {
       socket,
       messages: [],
       waiters: [],
+      candidateHandlers: new Map(),
       closed: false,
       error: undefined,
     };
     signalingSession = session;
     const timeout = window.setTimeout(() => {
       socket.close();
-        reject(Object.assign(
-          new Error("Could not reach the signaling service. Check your connection and try again."),
-          { retryable: true },
-        ));
+      reject(Object.assign(
+        new Error("Could not reach the signaling service. Check your connection and try again."),
+        { retryable: true },
+      ));
     }, 15000);
 
     socket.addEventListener("open", () => {
@@ -396,6 +397,12 @@ function connectSignaling(roomId, role, options = {}) {
         session.error = new Error(message.message || "The signaling service rejected this room.");
         session.error.retryable = message.retryable === true;
         rejectSignalWaiters(session, session.error);
+        return;
+      }
+      if (message?.type === "candidate") {
+        const handler = session.candidateHandlers.get(message.participantId);
+        if (handler) handler(message);
+        else session.messages.push(message);
         return;
       }
       const waiterIndex = session.waiters.findIndex(
@@ -477,6 +484,39 @@ function waitForAnySignal(session, types, timeoutMs = 240000) {
     }
     session.waiters.push(waiter);
   });
+}
+
+function registerRemoteIceCandidates(session, participantId, connection) {
+  const pending = [];
+  async function apply(candidate) {
+    try {
+      await connection.addIceCandidate(candidate);
+    } catch (error) {
+      showToast(`Could not apply a network candidate: ${error.message}`);
+    }
+  }
+  const handler = (message) => {
+    if (!connection.remoteDescription) {
+      pending.push(message.candidate);
+      return;
+    }
+    void apply(message.candidate);
+  };
+  session.candidateHandlers.set(participantId, handler);
+
+  for (let index = session.messages.length - 1; index >= 0; index -= 1) {
+    const message = session.messages[index];
+    if (message?.type === "candidate" && message.participantId === participantId) {
+      pending.unshift(message.candidate);
+      session.messages.splice(index, 1);
+    }
+  }
+
+  return async () => {
+    while (pending.length) {
+      await apply(pending.shift());
+    }
+  };
 }
 
 function rejectSignalWaiters(session, error) {
@@ -903,6 +943,7 @@ async function handleRoomSignaling(signaling, iceConfig) {
       });
     } else {
       const participant = roomConnections.get(message.participantId);
+      signaling.candidateHandlers.delete(message.participantId);
       participant?.channel?.close();
       participant?.connection.close();
       roomConnections.delete(message.participantId);
@@ -919,6 +960,18 @@ async function connectRoomParticipant(signaling, iceConfig, participantInfo) {
   const connection = createRoomPeerConnection(iceConfig.iceServers, iceConfig.relayAvailable);
   const participant = { connection, channel: undefined, name };
   roomConnections.set(participantId, participant);
+  const flushRemoteCandidates = registerRemoteIceCandidates(signaling, participantId, connection);
+  connection.addEventListener("icecandidate", (event) => {
+    try {
+      sendSignal(signaling, {
+        type: "candidate",
+        participantId,
+        candidate: event.candidate?.toJSON() ?? null,
+      });
+    } catch (error) {
+      if (!signaling.closed) showToast(error.message);
+    }
+  });
   configureRoomDataChannel(
     connection.createDataChannel("konnect", { ordered: true }),
     connection,
@@ -928,7 +981,6 @@ async function connectRoomParticipant(signaling, iceConfig, participantInfo) {
   try {
     const offer = await connection.createOffer();
     await connection.setLocalDescription(offer);
-    await waitForIceGathering(connection);
     sendSignal(signaling, {
       type: "offer",
       participantId,
@@ -944,8 +996,10 @@ async function connectRoomParticipant(signaling, iceConfig, participantInfo) {
       throw new Error("A participant sent an invalid connection answer.");
     }
     await connection.setRemoteDescription({ type: "answer", sdp: answer.sdp });
+    await flushRemoteCandidates();
     updateHostConnectionStatus(`Establishing an encrypted connection with ${name}…`);
   } catch (error) {
+    signaling.candidateHandlers.delete(participantId);
     if (roomConnections.get(participantId) === participant) {
       roomConnections.delete(participantId);
       roomParticipants.delete(participantId);
@@ -1047,13 +1101,29 @@ async function joinSignalingRoom(roomId) {
       }
       connection = createRoomPeerConnection(iceConfig.iceServers, iceConfig.relayAvailable);
       roomClientConnection = connection;
+      const flushRemoteCandidates = registerRemoteIceCandidates(signaling, participantId, connection);
+      connection.addEventListener("icecandidate", (event) => {
+        try {
+          sendSignal(signaling, {
+            type: "candidate",
+            participantId,
+            candidate: event.candidate?.toJSON() ?? null,
+          });
+        } catch (error) {
+          if (!signaling.closed) showToast(error.message);
+        }
+      });
       const connectionReady = waitForRoomDataChannel(connection, participantId, ready.creatorName);
       connectionReady.catch(() => {});
       await connection.setRemoteDescription({ type: "offer", sdp: offer.sdp });
+      await flushRemoteCandidates();
       const answer = await connection.createAnswer();
       await connection.setLocalDescription(answer);
-      await waitForIceGathering(connection);
-      sendSignal(signaling, { type: "answer", sdp: connection.localDescription.sdp });
+      sendSignal(signaling, {
+        type: "answer",
+        participantId,
+        sdp: connection.localDescription.sdp,
+      });
       if (!reconnecting) {
         setJoinStatus("Connected to the room creator. Establishing the encrypted connection…");
       }
