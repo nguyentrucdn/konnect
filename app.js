@@ -32,6 +32,7 @@ let activeScanStream;
 let scanFrameId;
 let toastTimeout;
 let lastScanTime = 0;
+let currentInviteUrl = "";
 const scanCanvas = document.createElement("canvas");
 const scanContext = scanCanvas.getContext("2d", { willReadFrequently: true });
 
@@ -65,6 +66,25 @@ function encodeDescription(description) {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return `KONNECT1.${btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")}`;
+}
+
+function makeInviteUrl(code) {
+  const inviteUrl = new URL(window.location.href);
+  inviteUrl.hash = new URLSearchParams({ join: code }).toString();
+  return inviteUrl.toString();
+}
+
+function extractInviteCode(value) {
+  const input = value.trim();
+  if (!/^https?:\/\//i.test(input)) return input;
+  const inviteUrl = new URL(input);
+  const currentUrl = new URL(window.location.href);
+  if (inviteUrl.origin !== currentUrl.origin || inviteUrl.pathname !== currentUrl.pathname) {
+    throw new Error("That invite link isn’t for this Konnect page.");
+  }
+  const code = new URLSearchParams(inviteUrl.hash.slice(1)).get("join");
+  if (!code) throw new Error("That invite link doesn’t contain a room code.");
+  return code;
 }
 
 function decodeDescription(code) {
@@ -196,8 +216,9 @@ async function createRoom() {
     showView(offerView);
     await waitForIceGathering(connection);
     const code = encodeDescription(connection.localDescription);
+    currentInviteUrl = makeInviteUrl(code);
     document.querySelector("#offer-code").value = code;
-    drawQr(document.querySelector("#offer-qr"), code);
+    drawQr(document.querySelector("#offer-qr"), currentInviteUrl);
     setConnectionStatus("Waiting for the other person to connect…");
   } catch (error) {
     resetPeerConnection();
@@ -211,7 +232,7 @@ async function createRoom() {
 async function joinRoom(code) {
   setupError.hidden = true;
   try {
-    const offer = decodeDescription(code);
+    const offer = decodeDescription(extractInviteCode(code));
     if (offer.type !== "offer") throw new Error("That code is a reply. Paste a room code from the person who created it.");
     const connection = createPeerConnection();
     connection.addEventListener("datachannel", (event) => configureDataChannel(event.channel));
@@ -534,6 +555,14 @@ document.querySelector("#disconnect-button").addEventListener("click", disconnec
 document.querySelector("#copy-offer-button").addEventListener("click", () => {
   void copyCode(document.querySelector("#offer-code"));
 });
+document.querySelector("#copy-invite-button").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(currentInviteUrl);
+    showToast("Invite link copied.");
+  } catch {
+    showToast("Copy wasn’t available. Use the room code instead.");
+  }
+});
 document.querySelector("#copy-answer-button").addEventListener("click", () => {
   void copyCode(answerCode);
 });
@@ -575,3 +604,10 @@ window.addEventListener("beforeunload", () => {
   stopScanner();
   resetPeerConnection();
 });
+
+const inviteCode = new URLSearchParams(window.location.hash.slice(1)).get("join");
+if (inviteCode) {
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  joinCode.value = inviteCode;
+  void joinRoom(inviteCode);
+}

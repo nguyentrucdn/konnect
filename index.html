@@ -73,11 +73,12 @@
         <button id="back-button" class="back-button" type="button">← Start over</button>
         <p class="eyebrow">Room created</p>
         <h2>Share this code</h2>
-        <p>Ask the other person to scan this QR or paste the code into “Join a room”.</p>
+        <p>Ask the other person to scan with their iPhone Camera or paste the code into “Join a room”. The invite opens this page and prepares their reply.</p>
         <div class="qr-wrap"><canvas id="offer-qr" width="240" height="240"></canvas></div>
         <label class="sr-only" for="offer-code">Your room code</label>
         <textarea id="offer-code" rows="3" readonly spellcheck="false"></textarea>
         <div class="form-actions">
+          <button id="copy-invite-button" class="button button-secondary" type="button">Copy invite link</button>
           <button id="copy-offer-button" class="button button-secondary" type="button">Copy code</button>
         </div>
         <div class="rule"></div>

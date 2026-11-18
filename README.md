@@ -15,10 +15,10 @@ HTTPS is needed for camera scanning and clipboard access. QR scanning uses a loc
 
 ## Connect
 
-1. One person selects **Create room** and shares the displayed QR code or code.
-2. The other person scans it or pastes it under **Join a room**. They then share the reply QR code or code back.
-3. The room creator scans or pastes that reply code. Once connected, either person can chat or send files.
+1. One person selects **Create room** and shares the displayed QR code, invite link, or room code.
+2. The other person scans the QR with their iPhone Camera (or another QR reader). The link opens Konnect and automatically prepares a reply. They share the reply code back.
+3. The room creator scans the reply QR inside Konnect or pastes the reply code. Once connected, either person can chat or send files.
 
-Connection codes are temporary WebRTC signaling data. They contain network connection details, so share them privately and only with a trusted peer using a trusted channel. DTLS protects data in transit, but someone who can replace the exchanged codes could attempt to intercept the connection. The app uses Google's public STUN service to help browsers discover a direct network route; it does not relay file or chat data. Some firewalls and networks block direct WebRTC connections, in which case a connection may not be possible.
+The invite link puts the temporary offer in the URL fragment. Fragments are not sent to the website server, and Konnect removes the fragment from the address bar after reading it. A direct, serverless WebRTC connection still requires the recipient to send their reply back to the room creator. Connection codes contain network details, so share them privately and only with a trusted peer using a trusted channel. DTLS protects data in transit, but someone who can replace the exchanged codes could attempt to intercept the connection. The app uses Google's public STUN service to help browsers discover a direct network route; it does not relay file or chat data. Some firewalls and networks block direct WebRTC connections, in which case a connection may not be possible.
 
 The QR generator is [qrcode-generator 1.4.4](https://github.com/kazuhikoarase/qrcode-generator), by Kazuhiko Arase, distributed under the MIT license. Its copyright and license notice is included in the vendored source. QR scanning uses [jsQR 1.4.0](https://github.com/cozmo/jsQR), distributed under the Apache 2.0 license; its license is included in the vendored source.
