@@ -2,7 +2,6 @@ import { DurableObject } from "cloudflare:workers";
 
 const ROOM_LIFETIME_MS = 5 * 60 * 1000;
 const MAX_SIGNAL_BYTES = 32 * 1024;
-const TURN_CREDENTIAL_TTL_SECONDS = 600;
 const TURN_REQUEST_LIMIT = 20;
 const TURN_RATE_WINDOW_MS = 60 * 1000;
 const STUN_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
@@ -63,8 +62,11 @@ export default {
         return jsonResponse({ error: "Signaling room is not connected" }, 403, origin);
       }
 
-      if (!env.TURN_KEY_ID || !env.TURN_KEY_SECRET) {
+      if (!env.METERED_TURN_APP || !env.METERED_TURN_API_KEY) {
         return jsonResponse({ iceServers: STUN_SERVERS, relayAvailable: false }, 200, origin);
+      }
+      if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(env.METERED_TURN_APP)) {
+        return jsonResponse({ error: "TURN provider configuration is invalid." }, 503, origin);
       }
 
       const clientIp = request.headers.get("CF-Connecting-IP") || "unknown";
@@ -79,38 +81,34 @@ export default {
       let turnResponse;
       try {
         turnResponse = await fetch(
-          `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(env.TURN_KEY_ID)}/credentials/generate-ice-servers`,
+          `https://${env.METERED_TURN_APP}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(env.METERED_TURN_API_KEY)}`,
           {
-            method: "POST",
-            headers: {
-              authorization: `Bearer ${env.TURN_KEY_SECRET}`,
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({ ttl: TURN_CREDENTIAL_TTL_SECONDS }),
+            method: "GET",
+            headers: { accept: "application/json" },
           },
         );
       } catch (error) {
-        console.error("Could not request Cloudflare TURN credentials", error);
+        console.error("Could not request Metered TURN credentials", error);
         return jsonResponse({ error: "Relay credentials are temporarily unavailable." }, 502, origin);
       }
       if (!turnResponse.ok) {
-        console.error("Cloudflare TURN credential request failed", turnResponse.status);
+        console.error("Metered TURN credential request failed", turnResponse.status);
         return jsonResponse({ error: "Relay credentials are temporarily unavailable." }, 502, origin);
       }
 
-      let turnConfig;
+      let iceServers;
       try {
-        turnConfig = await turnResponse.json();
+        iceServers = await turnResponse.json();
       } catch {
-        console.error("Cloudflare TURN returned invalid JSON");
+        console.error("Metered TURN returned invalid JSON");
         return jsonResponse({ error: "Relay credentials are temporarily unavailable." }, 502, origin);
       }
-      if (!Array.isArray(turnConfig?.iceServers) || turnConfig.iceServers.length === 0) {
-        console.error("Cloudflare TURN returned no ICE servers");
+      if (!Array.isArray(iceServers) || iceServers.length === 0) {
+        console.error("Metered TURN returned no ICE servers");
         return jsonResponse({ error: "Relay credentials are temporarily unavailable." }, 502, origin);
       }
 
-      return jsonResponse({ iceServers: turnConfig.iceServers, relayAvailable: true }, 200, origin);
+      return jsonResponse({ iceServers, relayAvailable: true }, 200, origin);
     }
 
     const match = url.pathname.match(/^\/room\/([a-f0-9]{48})$/);
